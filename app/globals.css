@@ -75,6 +75,37 @@
   --maxw: 1320px;
 }
 
+/* Dark theme — toggled by [data-theme="dark"] on <html>. The init script in
+   app/layout.tsx applies this before first paint to avoid a flash. */
+[data-theme="dark"] {
+  --bg: #09090b;
+  --bg-elev: #131316;
+  --bg-tint: #1a1a1d;
+
+  --fg: #f4f4f5;
+  --fg-mute: #a1a1aa;
+  --fg-faint: #71717a;
+
+  --line: #27272a;
+  --line-strong: #3f3f46;
+
+  --pos: #4ade80;
+  --neg: #f87171;
+  --warn-fg: #fbbf24;
+  --warn-bg: #2a210b;
+  --warn-line: #51421b;
+
+  --accent: #4ade80;
+  --accent-soft: rgba(74, 222, 128, 0.16);
+
+  --plot: var(--accent);
+  --plot-soft: var(--accent-soft);
+  --grid: #27272a;
+
+  --skel-base: #1c1c20;
+  --skel-shine: #2a2a2f;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -280,6 +311,72 @@ p {
 
 .currency-tabs .tab {
   min-width: 44px;
+}
+
+/* Sibling control to the segmented .tabs — same border, height, mono label
+   so the eye reads it as part of the topbar control group rather than a
+   foreign UI element. */
+.topbar-toggle {
+  align-items: center;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--fg-mute);
+  cursor: pointer;
+  display: inline-flex;
+  gap: 8px;
+  height: 28px;
+  padding: 0 10px;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.topbar-toggle:hover {
+  color: var(--fg);
+}
+
+.topbar-toggle-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.topbar-toggle-pct {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--fg-faint);
+}
+
+.topbar-toggle[data-active="true"] {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--fg);
+}
+
+.topbar-toggle[data-active="true"] .topbar-toggle-pct {
+  color: var(--accent);
+}
+
+.theme-toggle {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--fg-mute);
+  cursor: pointer;
+  display: inline-flex;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
+  width: 28px;
+}
+
+.theme-toggle:hover {
+  background: var(--bg-tint);
+  color: var(--fg);
 }
 
 /* ─── Notice strip ─────────────────────────────────────────── */
@@ -532,11 +629,17 @@ p {
 }
 
 .chart-mini-value {
+  color: var(--fg);
   font-family: var(--font-mono);
   font-feature-settings: "tnum" 1;
   font-size: 14px;
   font-weight: 500;
+  transition: color 160ms ease;
 }
+
+/* Mirror the headline KPI tone so churn-up reads red here too, not just at the top. */
+.chart-mini-value[data-tone="pos"] { color: var(--pos); }
+.chart-mini-value[data-tone="neg"] { color: var(--neg); }
 
 .chart-mini-spark {
   height: 28px;
@@ -689,7 +792,9 @@ p {
 
 .spark-line[data-tone="pos"] { stroke: var(--pos); }
 .spark-line[data-tone="neg"] { stroke: var(--neg); }
-.spark-line[data-tone="muted"] { stroke: var(--fg-faint); }
+/* "muted" = no comparison signal; fall back to the default accent so the line
+   keeps its identity as a chart line rather than fading to UI chrome. */
+.spark-line[data-tone="muted"] { stroke: var(--accent); }
 
 @keyframes spin {
   to { transform: rotate(360deg); }
@@ -769,6 +874,10 @@ p {
   }
 
   .brand-project {
+    display: none;
+  }
+
+  .topbar-toggle-label {
     display: none;
   }
 

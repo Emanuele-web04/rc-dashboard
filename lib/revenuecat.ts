@@ -16,7 +16,6 @@ export type ChartDefinition = {
     | "mrr"
     | "arr"
     | "actives"
-    | "trials"
     | "churn"
     | "customers_new"
     | "actives_new"
@@ -50,12 +49,6 @@ export const DEFAULT_CHARTS: ChartDefinition[] = [
     name: "actives",
     label: "Active subscriptions",
     description: "Currently paid, accessible subscriptions.",
-    kind: "number"
-  },
-  {
-    name: "trials",
-    label: "Active trials",
-    description: "Subscriptions in their trial period.",
     kind: "number"
   },
   {

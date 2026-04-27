@@ -7,7 +7,7 @@
 // Depends on: lucide-react, lib/ranges, lib/demo-data, lib/chart-normalizer
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDownRight, ArrowUpRight, RefreshCw, TriangleAlert } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Moon, RefreshCw, Sun, TriangleAlert } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
   ChartContainer,
@@ -15,9 +15,17 @@ import {
   ChartTooltipContent,
   type ChartConfig
 } from "@/components/ui/chart";
+import { Switch } from "@/components/ui/switch";
 import { createDemoDashboard } from "@/lib/demo-data";
 import { RANGE_OPTIONS, getRangeConfig, type RangeKey } from "@/lib/ranges";
 import type { DashboardChart, DashboardPoint } from "@/lib/chart-normalizer";
+
+// Apple/Google take a 15% revenue share on subscriptions after year one (and on
+// Small Business Program apps). When the toggle is on we present *net* revenue
+// (gross × 0.85) everywhere a currency value is rendered. Non-currency metrics
+// (counts, percentages) pass through unchanged.
+const APPLE_CUT = 0.15;
+const NET_FACTOR = 1 - APPLE_CUT;
 
 type RevenueCatOverviewMetric = {
   id: string;
@@ -35,6 +43,13 @@ type RevenueCatOverview = {
 
 type CurrencyCode = "USD" | "EUR";
 
+type TodayPayload = {
+  yesterdayUtcValue: number | null;
+  todayUtcValue: number | null;
+  todayUtcDate: string;
+  asOfMs: number;
+};
+
 type DashboardResponse = Omit<ReturnType<typeof createDemoDashboard>, "overview"> & {
   configured: boolean;
   app?: {
@@ -44,6 +59,7 @@ type DashboardResponse = Omit<ReturnType<typeof createDemoDashboard>, "overview"
     iconUrl?: string;
   } | null;
   overview?: RevenueCatOverview | null;
+  today?: TodayPayload | null;
   cached?: boolean;
   stale?: boolean;
   warning?: string;
@@ -58,20 +74,90 @@ const CLIENT_CACHE_TTL_MS = 60_000;
 type CacheEntry = { payload: DashboardResponse; fetchedAt: number };
 
 export function RevenueDashboard() {
+  // Initial state always uses defaults so SSR/static output is deterministic
+  // (avoids hydration mismatches). The URL is read in a post-mount effect
+  // below, then state updates flow back into the URL via replaceState.
   const [rangeKey, setRangeKey] = useState<RangeKey>("28d");
   const [currency, setCurrency] = useState<CurrencyCode>("USD");
   const [cache, setCache] = useState<Record<string, CacheEntry>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [appleCut, setAppleCut] = useState(false);
+  // Latch flips true after URL → state hydration completes. Until then we
+  // skip the state → URL writer to avoid clobbering an incoming `?range=7d`
+  // with the default `28d` during the first commit.
+  const [hydratedFromUrl, setHydratedFromUrl] = useState(false);
+
+  // URL → state, once on mount. Falls back to the localStorage-remembered
+  // `appleCut` preference when no `?cut=` param is present so power users
+  // don't re-toggle on every fresh visit, while shareable links with `?cut=1`
+  // still take precedence.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+
+    const rangeFromUrl = params.get("range");
+    if (rangeFromUrl && RANGE_OPTIONS.some((option) => option.key === rangeFromUrl)) {
+      setRangeKey(rangeFromUrl as RangeKey);
+    }
+
+    const currencyFromUrl = params.get("currency");
+    if (currencyFromUrl === "USD" || currencyFromUrl === "EUR") {
+      setCurrency(currencyFromUrl);
+    }
+
+    const cutFromUrl = params.get("cut");
+    if (cutFromUrl === "1" || cutFromUrl === "0") {
+      setAppleCut(cutFromUrl === "1");
+    } else {
+      try {
+        if (localStorage.getItem("rc-apple-cut") === "1") setAppleCut(true);
+      } catch {
+        /* private mode etc. — leave default false. */
+      }
+    }
+
+    setHydratedFromUrl(true);
+  }, []);
+
+  // state → URL. Uses history.replaceState (not router.replace / pushState):
+  //   - no Next.js navigation → no React re-render cycle
+  //   - no new history entry → back button still leaves the dashboard cleanly
+  // Default values are deleted from the URL so it stays minimal until the
+  // operator actually changes something.
+  useEffect(() => {
+    if (!hydratedFromUrl) return;
+    const url = new URL(window.location.href);
+    setOrDelete(url.searchParams, "range", rangeKey, "28d");
+    setOrDelete(url.searchParams, "currency", currency, "USD");
+    setOrDelete(url.searchParams, "cut", appleCut ? "1" : "0", "0");
+    window.history.replaceState(null, "", url.toString());
+  }, [rangeKey, currency, appleCut, hydratedFromUrl]);
+
+  function handleAppleCutChange(next: boolean) {
+    setAppleCut(next);
+    // localStorage stays as the "remembered preference" fallback for fresh
+    // visits without an explicit `?cut=` param.
+    try {
+      localStorage.setItem("rc-apple-cut", next ? "1" : "0");
+    } catch {
+      /* noop */
+    }
+  }
 
   const cacheKey = `${rangeKey}:${currency}`;
   const cached = cache[cacheKey];
-  const data = cached?.payload;
+  const rawData = cached?.payload;
+  // Single transform point: scale every currency-shaped field by NET_FACTOR
+  // when the toggle is on. Downstream components stay agnostic to the cut.
+  const data = useMemo(() => (rawData ? applyAppleCut(rawData, appleCut) : rawData), [rawData, appleCut]);
 
   // Hooks must be unconditional; guard against `data` being undefined during skeleton.
-  const primaryCharts = useMemo(() => data?.charts.slice(0, 6) ?? [], [data]);
-  const sideCharts = useMemo(() => data?.charts.slice(1, 6) ?? [], [data]);
-  const matrixCharts = useMemo(() => data?.charts.slice(6) ?? [], [data]);
+  // Headline strip = first 5 charts (revenue, mrr, arr, actives, churn) + a synthetic
+  // "Today" cell injected at index 4 → 6 cells total. Side mini charts skip revenue
+  // (since it's the main chart) and stop before the matrix block.
+  const headlineCharts = useMemo(() => data?.charts.slice(0, 5) ?? [], [data]);
+  const sideCharts = useMemo(() => data?.charts.slice(1, 5) ?? [], [data]);
+  const matrixCharts = useMemo(() => data?.charts.slice(5) ?? [], [data]);
   const mainChart = data?.charts[0];
   const overviewById = useMemo(() => {
     return new Map((data?.overview?.metrics ?? []).map((metric) => [metric.id, metric]));
@@ -147,6 +233,8 @@ export function RevenueDashboard() {
         setRangeKey={setRangeKey}
         currency={currency}
         setCurrency={setCurrency}
+        appleCut={appleCut}
+        onAppleCutChange={handleAppleCutChange}
         isLoading={isLoading}
         configured={data?.configured ?? false}
         fetchedAt={data?.fetchedAt}
@@ -164,7 +252,23 @@ export function RevenueDashboard() {
             <section className="section" aria-label="Headline metrics">
               <SectionHead num="01" title="Headline metrics" meta={data.range.label} />
               <div className="kpi-strip">
-                {primaryCharts.map((chart) => (
+                {headlineCharts.slice(0, 4).map((chart) => (
+                  <KpiCell
+                    key={chart.name}
+                    chart={chart}
+                    currency={data.currency}
+                    overviewMetric={overviewById.get(getOverviewMetricId(chart.name))}
+                    rangeKey={data.range.key}
+                  />
+                ))}
+                {mainChart && (
+                  <TodayKpiCell
+                    today={data.today ?? null}
+                    revenueChart={mainChart}
+                    currency={data.currency}
+                  />
+                )}
+                {headlineCharts.slice(4).map((chart) => (
                   <KpiCell
                     key={chart.name}
                     chart={chart}
@@ -198,7 +302,17 @@ export function RevenueDashboard() {
                     />
                   </div>
                   <div className="chart-side">
-                    {sideCharts.map((chart) => (
+                    {/* Slot order mirrors the headline strip: mrr, arr, actives,
+                        Today (synthetic, where Active Trials used to live), churn. */}
+                    {sideCharts.slice(0, 3).map((chart) => (
+                      <MiniChart key={chart.name} chart={chart} currency={data.currency} />
+                    ))}
+                    <TodayMiniChart
+                      today={data.today ?? null}
+                      revenueChart={mainChart}
+                      currency={data.currency}
+                    />
+                    {sideCharts.slice(3).map((chart) => (
                       <MiniChart key={chart.name} chart={chart} currency={data.currency} />
                     ))}
                   </div>
@@ -235,6 +349,8 @@ function TopBar({
   setRangeKey,
   currency,
   setCurrency,
+  appleCut,
+  onAppleCutChange,
   isLoading,
   configured,
   fetchedAt,
@@ -245,6 +361,8 @@ function TopBar({
   setRangeKey: (range: RangeKey) => void;
   currency: CurrencyCode;
   setCurrency: (currency: CurrencyCode) => void;
+  appleCut: boolean;
+  onAppleCutChange: (next: boolean) => void;
   isLoading: boolean;
   configured: boolean;
   fetchedAt?: string;
@@ -265,6 +383,8 @@ function TopBar({
         </div>
 
         <div className="topbar-spacer" />
+
+        <AppleCutToggle checked={appleCut} onCheckedChange={onAppleCutChange} />
 
         <div className="tabs currency-tabs" role="tablist" aria-label="Display currency">
           {(["USD", "EUR"] as CurrencyCode[]).map((option) => (
@@ -298,6 +418,8 @@ function TopBar({
           ))}
         </div>
 
+        <ThemeToggle />
+
         <div className="topbar-meta" data-loading={isLoading} aria-live="polite">
           {isLoading ? (
             <RefreshCw size={12} strokeWidth={2} />
@@ -313,6 +435,47 @@ function TopBar({
   );
 }
 
+// Reads/writes the same `rc-theme` localStorage key that the inline init script
+// in app/layout.tsx uses, so toggle state stays in sync across reloads with no flash.
+function ThemeToggle() {
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    const initial = (document.documentElement.getAttribute("data-theme") as "light" | "dark" | null) ?? "light";
+    setTheme(initial);
+    setMounted(true);
+  }, []);
+
+  function toggle() {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.setAttribute("data-theme", next);
+    try {
+      localStorage.setItem("rc-theme", next);
+    } catch {
+      /* storage may be blocked (private mode); ignore. */
+    }
+  }
+
+  // Render a placeholder before mount so the icon doesn't flicker between sun/moon.
+  return (
+    <button
+      type="button"
+      className="theme-toggle"
+      onClick={toggle}
+      aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+      title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+    >
+      {mounted ? (
+        theme === "dark" ? <Sun size={14} strokeWidth={1.8} /> : <Moon size={14} strokeWidth={1.8} />
+      ) : (
+        <Moon size={14} strokeWidth={1.8} />
+      )}
+    </button>
+  );
+}
+
 function Notice({ message }: { message: string }) {
   return (
     <div className="notice" role="status">
@@ -321,6 +484,91 @@ function Notice({ message }: { message: string }) {
       <span>{message}</span>
     </div>
   );
+}
+
+// Inline topbar control. Visually weighted to match the segmented currency/range
+// tabs (same border, height, mono 11px label) so it reads as a sibling control,
+// not a foreign UI. When ON every currency value renders as gross × 0.85 (see
+// applyAppleCut). The −15% marker turns accent-tinted to confirm active state.
+function AppleCutToggle({
+  checked,
+  onCheckedChange
+}: {
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+}) {
+  return (
+    <label className="topbar-toggle" data-active={checked}>
+      <span className="topbar-toggle-label">APPLE&apos;S CUT</span>
+      <span className="topbar-toggle-pct">−15%</span>
+      <Switch
+        size="sm"
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        aria-label="Apply Apple's 15% cut to revenue figures"
+      />
+    </label>
+  );
+}
+
+// Returns a new DashboardResponse with every currency-shaped numeric scaled by
+// NET_FACTOR when `enabled` is true. Pure / immutable so memoization stays
+// correct. Counts and percentages are passed through unchanged. Comparison
+// `percentDelta` doesn't need scaling because both sides shrink by the same
+// factor, leaving the ratio identical.
+function applyAppleCut(data: DashboardResponse, enabled: boolean): DashboardResponse {
+  if (!enabled) return data;
+  const factor = NET_FACTOR;
+
+  const scale = (n: number | null | undefined) => (n == null ? n ?? null : n * factor);
+
+  const charts = data.charts.map((chart) => {
+    if (chart.kind !== "currency") return chart;
+    return {
+      ...chart,
+      data: chart.data.map((point) => ({ ...point, value: point.value * factor })),
+      latest: scale(chart.latest),
+      previous: scale(chart.previous),
+      delta: scale(chart.delta),
+      metricValue: scale(chart.metricValue),
+      comparison: chart.comparison
+        ? {
+            ...chart.comparison,
+            currentValue: scale(chart.comparison.currentValue),
+            previousValue: scale(chart.comparison.previousValue),
+            delta: scale(chart.comparison.delta)
+          }
+        : chart.comparison
+    };
+  });
+
+  const today = data.today
+    ? {
+        ...data.today,
+        yesterdayUtcValue: scale(data.today.yesterdayUtcValue),
+        todayUtcValue: scale(data.today.todayUtcValue)
+      }
+    : data.today;
+
+  // Overview metrics expose a `unit` field; treat anything currency-flavoured
+  // ("$", "USD", "EUR", "€") as scalable. Counts ("subscriptions", "people")
+  // and percent ("%") pass through as-is.
+  const overview = data.overview
+    ? {
+        ...data.overview,
+        metrics: data.overview.metrics?.map((metric) => {
+          const unit = metric.unit ?? "";
+          const isCurrency = /[$€£¥]/.test(unit) || /usd|eur|gbp|jpy/i.test(unit);
+          if (!isCurrency) return metric;
+          return {
+            ...metric,
+            value: typeof metric.value === "number" ? metric.value * factor : metric.value
+          };
+        })
+      }
+    : data.overview;
+
+  return { ...data, charts, today, overview };
 }
 
 // ─── Section primitives ───────────────────────────────────────
@@ -446,6 +694,36 @@ function KpiCell({
   );
 }
 
+// "Today" tile: revenue accumulated since 00:00 in the user's *local* timezone.
+//
+// RevenueCat's chart API only exposes UTC daily buckets (no hourly resolution,
+// no tz parameter — confirmed against v2 docs). To approximate "since local
+// midnight" we take the two most recent UTC daily revenue totals (provided by
+// the server's `today` payload) and weight them by how much of each UTC day
+// falls inside the user's [local-midnight, now] window. Within the borrowed
+// slice we assume revenue is distributed roughly uniformly — defensible for
+// the typical 0–6h window most timezones need.
+function TodayKpiCell({
+  today,
+  revenueChart,
+  currency
+}: {
+  today: TodayPayload | null;
+  revenueChart: DashboardChart;
+  currency: string;
+}) {
+  const value = useLocalDayRevenue(today, revenueChart);
+  return (
+    <article className="kpi-cell">
+      <span className="kpi-label">Today</span>
+      <span className="kpi-value">{formatMetric(value, "currency", currency)}</span>
+      <div className="kpi-meta">
+        <span className="kpi-context">since 00:00 local</span>
+      </div>
+    </article>
+  );
+}
+
 function MainStat({ chart, currency }: { chart: DashboardChart; currency: string }) {
   const metric = getRangeMetric(chart);
 
@@ -458,15 +736,97 @@ function MainStat({ chart, currency }: { chart: DashboardChart; currency: string
 }
 
 function MiniChart({ chart, currency }: { chart: DashboardChart; currency: string }) {
+  // Mirror the headline KPI tone on both the value text *and* the sparkline,
+  // so e.g. churn-up reads red end-to-end (number + line) instead of the line
+  // staying green while only the number turns red. `data-tone` is consumed by
+  // both `.chart-mini-value` and `.spark-line` in globals.css.
+  const tone = getComparisonTone(chart);
   return (
     <article className="chart-mini">
       <div className="chart-mini-head">
         <span className="chart-mini-label">{chart.label}</span>
-        <span className="chart-mini-value">{formatMetric(getRangeMetric(chart).value, chart.kind, currency)}</span>
+        <span className="chart-mini-value" data-tone={tone}>
+          {formatMetric(getRangeMetric(chart).value, chart.kind, currency)}
+        </span>
       </div>
-      <Sparkline data={chart.data} className="chart-mini-spark" />
+      <Sparkline data={chart.data} className="chart-mini-spark" tone={tone} />
     </article>
   );
+}
+
+// Side-panel twin of TodayKpiCell. Same TZ-aware "since local midnight" value,
+// rendered with the revenue trajectory underneath so it visually integrates
+// with the other side mini charts.
+function TodayMiniChart({
+  today,
+  revenueChart,
+  currency
+}: {
+  today: TodayPayload | null;
+  revenueChart: DashboardChart;
+  currency: string;
+}) {
+  const value = useLocalDayRevenue(today, revenueChart);
+  return (
+    <article className="chart-mini">
+      <div className="chart-mini-head">
+        <span className="chart-mini-label">Today</span>
+        <span className="chart-mini-value">{formatMetric(value, "currency", currency)}</span>
+      </div>
+      <Sparkline data={revenueChart.data} className="chart-mini-spark" />
+    </article>
+  );
+}
+
+// Estimates revenue between the user's local midnight and *now* by combining
+// RC's UTC daily buckets — see TodayKpiCell for the constraint this works
+// around. Returns null only when both buckets are missing. The hook keeps the
+// number ticking forward by re-evaluating once a minute.
+function useLocalDayRevenue(today: TodayPayload | null, revenueChart: DashboardChart): number | null {
+  // Re-render once a minute so the displayed number doesn't go stale at 23:59 →
+  // 00:01 boundaries (the bucket weighting flips when local midnight passes).
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Server-provided dedicated 2-day series is the source of truth. Fall back to
+  // the main revenue chart's last two daily points when present (covers offline
+  // demo + non-daily ranges where the dedicated fetch may have been missed).
+  let yesterdayUtc = today?.yesterdayUtcValue ?? null;
+  let todayUtc = today?.todayUtcValue ?? null;
+  if (yesterdayUtc === null && todayUtc === null) {
+    const last = revenueChart.data.at(-1);
+    const prev = revenueChart.data.at(-2);
+    if (last?.value !== undefined) todayUtc = last.value;
+    if (prev?.value !== undefined) yesterdayUtc = prev.value;
+  }
+  if (yesterdayUtc === null && todayUtc === null) return null;
+
+  const now = new Date();
+  const localMidnightMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).getTime();
+  const utcMidnightTodayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0);
+  const utcMidnightYesterdayMs = utcMidnightTodayMs - 86_400_000;
+  const nowMs = now.getTime();
+
+  // Window we want: [localMidnight, now]. Compute its overlap with each UTC
+  // bucket, then assume uniform within-bucket distribution to weight the share.
+  const yesterdayOverlapMs = Math.max(
+    0,
+    Math.min(nowMs, utcMidnightTodayMs) - Math.max(localMidnightMs, utcMidnightYesterdayMs)
+  );
+  const yesterdayShare = yesterdayOverlapMs / 86_400_000;
+
+  // Today's UTC bucket value covers [utcMidnightToday, ~now]. We treat it as a
+  // partial bucket whose width = (now − utcMidnightToday).
+  const todayBucketMs = Math.max(1, nowMs - utcMidnightTodayMs);
+  const todayOverlapMs = Math.max(0, nowMs - Math.max(localMidnightMs, utcMidnightTodayMs));
+  const todayShare = todayOverlapMs / todayBucketMs;
+
+  const ySafe = yesterdayUtc ?? 0;
+  const tSafe = todayUtc ?? 0;
+  return Math.round((ySafe * yesterdayShare + tSafe * todayShare) * 100) / 100;
 }
 
 function MatrixCell({ chart, currency }: { chart: DashboardChart; currency: string }) {
@@ -924,13 +1284,23 @@ function getLatestScope(chart: DashboardChart) {
   if (
     chart.name === "mrr" ||
     chart.name === "arr" ||
-    chart.name === "actives" ||
-    chart.name === "trials"
+    chart.name === "actives"
   ) {
     return "current";
   }
 
   return "latest point";
+}
+
+// Keeps the URL minimal: only writes a param when its value differs from the
+// dashboard default. Used by the state → URL effect to avoid noisy URLs like
+// `?range=28d&currency=USD&cut=0` when the operator hasn't changed anything.
+function setOrDelete(params: URLSearchParams, key: string, value: string, defaultValue: string) {
+  if (value === defaultValue) {
+    params.delete(key);
+  } else {
+    params.set(key, value);
+  }
 }
 
 function getComparisonTone(chart: DashboardChart): "pos" | "neg" | "muted" {
@@ -986,7 +1356,6 @@ function getOverviewMetricId(chartName: DashboardChart["name"]) {
     mrr: "mrr",
     arr: "arr",
     actives: "active_subscriptions",
-    trials: "active_trials",
     churn: "churn",
     customers_new: "new_customers"
   };

@@ -32,6 +32,14 @@ export function createDemoDashboard(range: RangeConfig) {
     });
   });
 
+  // Demo "today" payload mirrors the live shape so TodayKpiCell/TodayMiniChart
+  // can compute a local-midnight estimate even before credentials are configured.
+  const revenueChart = charts[0];
+  const todayUtcValue = revenueChart?.data.at(-1)?.value ?? null;
+  const yesterdayUtcValue = revenueChart?.data.at(-2)?.value ?? null;
+  const now = new Date();
+  const todayUtcDate = format(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())), "yyyy-MM-dd");
+
   return {
     configured: false,
     message: "Add REVENUECAT_API_KEY to .env.local to replace demo data.",
@@ -40,6 +48,12 @@ export function createDemoDashboard(range: RangeConfig) {
     range,
     overview: null,
     charts: charts as DashboardChart[],
+    today: {
+      yesterdayUtcValue,
+      todayUtcValue,
+      todayUtcDate,
+      asOfMs: now.getTime()
+    },
     fetchedAt: format(new Date(), "yyyy-MM-dd'T'HH:mm:ss.SSSxxx")
   };
 }

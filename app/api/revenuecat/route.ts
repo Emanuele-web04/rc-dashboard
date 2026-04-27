@@ -9,6 +9,17 @@ import { normalizeChart, type DashboardChart, type DashboardPoint } from "@/lib/
 import { DEFAULT_CHARTS, getRevenueCatConfig, revenueCatFetch } from "@/lib/revenuecat";
 import { getRangeConfig, type RangeKey } from "@/lib/ranges";
 
+// "Today" bridge: RevenueCat's API only exposes UTC daily buckets (no hourly,
+// no timezone parameter — verified against v2 docs). To estimate revenue from
+// the *user's* local midnight we ship the two most recent UTC daily revenue
+// totals and let the client compute the overlap with their actual local day.
+type TodayPayload = {
+  yesterdayUtcValue: number | null;
+  todayUtcValue: number | null;
+  todayUtcDate: string;
+  asOfMs: number;
+};
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -20,6 +31,7 @@ type DashboardPayload = {
   range: ReturnType<typeof getRangeConfig>;
   overview: unknown;
   charts: DashboardChart[];
+  today: TodayPayload;
   fetchedAt: string;
   cached?: boolean;
   stale?: boolean;
@@ -181,8 +193,9 @@ async function fetchDashboardPayload(
     range.key === "28d"
       ? revenueCatFetch(`/projects/${projectId}/metrics/overview`, apiKey, { currency })
       : Promise.resolve(null);
-  const [overview, ...rawCharts] = await Promise.all([
+  const [overview, today, ...rawCharts] = await Promise.all([
     overviewRequest,
+    fetchTodaySeries(projectId, apiKey, currency),
     ...DASHBOARD_CHARTS.map((chart) =>
       revenueCatFetch(`/projects/${projectId}/charts/${chart.name}`, apiKey, query)
         .then((data) => normalizeChart(chart, data))
@@ -199,8 +212,55 @@ async function fetchDashboardPayload(
     range,
     overview,
     charts,
+    today,
     fetchedAt: new Date().toISOString()
   };
+}
+
+// Fetches the last two UTC daily revenue buckets regardless of the dashboard's
+// active range. The client uses these to weight by local-tz overlap and present
+// a "since 00:00 local" estimate (since the API itself can't slice sub-daily).
+async function fetchTodaySeries(
+  projectId: string,
+  apiKey: string,
+  currency: string
+): Promise<TodayPayload> {
+  const now = new Date();
+  const todayUtc = formatDate(now);
+  const yesterdayUtc = formatDate(new Date(now.getTime() - 86_400_000));
+
+  try {
+    const raw = await revenueCatFetch(`/projects/${projectId}/charts/revenue`, apiKey, {
+      currency,
+      realtime: "true",
+      resolution: "0",
+      start_date: yesterdayUtc,
+      end_date: todayUtc
+    });
+    const chart = normalizeChart(
+      { name: "revenue", label: "Revenue", description: "", kind: "currency" },
+      raw
+    );
+    const todayPoint = chart.data.find((p) => p.date === todayUtc) ?? chart.data.at(-1) ?? null;
+    const yesterdayPoint =
+      chart.data.find((p) => p.date === yesterdayUtc) ??
+      (chart.data.length >= 2 ? chart.data.at(-2) ?? null : null);
+
+    return {
+      yesterdayUtcValue: yesterdayPoint?.value ?? null,
+      todayUtcValue: todayPoint?.value ?? null,
+      todayUtcDate: todayUtc,
+      asOfMs: Date.now()
+    };
+  } catch {
+    // Don't fail the whole dashboard for the Today tile; client falls back gracefully.
+    return {
+      yesterdayUtcValue: null,
+      todayUtcValue: null,
+      todayUtcDate: todayUtc,
+      asOfMs: Date.now()
+    };
+  }
 }
 
 // Reads the first configured app so the UI can show product identity instead of a raw project id.
