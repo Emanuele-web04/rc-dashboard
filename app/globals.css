@@ -846,6 +846,441 @@ p {
   animation: fade-in 320ms ease both;
 }
 
+/* ─── Net calculator (Sheet) ──────────────────────────────── */
+/* Trigger lives in the topbar — same chrome as .topbar-toggle but the icon
+   does the talking instead of a percent label. */
+.calc-trigger {
+  color: var(--fg);
+  gap: 6px;
+  padding: 0 9px;
+}
+
+.calc-trigger:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+
+.calc-trigger svg {
+  color: var(--accent);
+}
+
+/* Sheet shell. Tailwind classes from shadcn handle position/animation;
+   we layer in the visual language (background, scroll, padding rhythm)
+   so it matches the dashboard rather than reading as an alien dialog. */
+.calc-sheet {
+  background: var(--bg);
+  border-left: 1px solid var(--line);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-width: 460px;
+  width: min(460px, 92vw);
+  padding: 0;
+}
+
+.calc-header {
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 22px 24px 18px;
+}
+
+.calc-eyebrow {
+  align-items: center;
+  color: var(--fg-faint);
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  gap: 6px;
+  letter-spacing: 0.08em;
+}
+
+.calc-title {
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+.calc-sub {
+  color: var(--fg-mute);
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.calc-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 24px;
+  overflow-y: auto;
+  padding: 22px 24px 28px;
+}
+
+/* Headline — big take-home number. Uses the same mono numeral feature
+   set as the kpi-value tiles for visual consistency. */
+.calc-headline {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+}
+
+.calc-headline-label {
+  color: var(--fg-mute);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+.calc-headline-value {
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1, "ss01" 1;
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.calc-headline-sub {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 11px;
+}
+
+/* Waterfall table — minimal hairline rows, mono-aligned values right.
+   Subtotals get a slight emphasis; deductions stay muted; the final
+   "Netto in tasca" row inverts to draw the eye. */
+.calc-table {
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+}
+
+.calc-row {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px 0;
+}
+
+.calc-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.calc-row-label {
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+
+.calc-row-detail {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+}
+
+.calc-row-value {
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1, "ss01" 1;
+  font-size: 13px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.calc-row[data-kind="subtotal"] {
+  background: color-mix(in srgb, var(--bg-tint) 70%, transparent);
+}
+
+.calc-row[data-kind="subtotal"] .calc-row-value {
+  font-weight: 600;
+}
+
+.calc-row[data-kind="deduct"] .calc-row-value {
+  color: var(--fg-mute);
+}
+
+.calc-row[data-kind="neutral"] .calc-row-value,
+.calc-row[data-kind="neutral"] .calc-row-label {
+  color: var(--fg-mute);
+}
+
+.calc-row[data-kind="net"] {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-bottom: 0;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+  margin-top: 2px;
+  padding: 14px 12px;
+}
+
+.calc-row[data-kind="net"] .calc-row-label {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.calc-row[data-kind="net"] .calc-row-value {
+  color: var(--accent);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+/* Settings — mirrors the topbar tab segmented control styling so the user
+   gets familiar muscle memory. Two-option buttons, mono sub-label. */
+.calc-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.calc-settings-title {
+  color: var(--fg-mute);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.calc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.calc-field-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.calc-field-label {
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.calc-field-hint {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.calc-segments {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  overflow: hidden;
+}
+
+/* Inner secondary segmented control inside the INPS field — slightly muted
+   so the eye reads it as a sub-choice once the user has picked "Percentuale"
+   in the primary segmented control above it. */
+.calc-segments--secondary {
+  margin-top: 6px;
+  background: var(--bg-tint);
+}
+
+.calc-segment {
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--line);
+  color: var(--fg-mute);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  gap: 2px;
+  padding: 8px 10px;
+  text-align: left;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.calc-segment:first-child {
+  border-left: 0;
+}
+
+.calc-segment:hover {
+  color: var(--fg);
+}
+
+.calc-segment[data-active="true"] {
+  background: var(--fg);
+  color: var(--bg-elev);
+}
+
+.calc-segment-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.calc-segment-sub {
+  font-size: 10.5px;
+  opacity: 0.7;
+}
+
+.calc-note {
+  color: var(--fg-faint);
+  font-size: 11.5px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.calc-note-strong {
+  color: var(--fg-mute);
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+}
+
+/* ─── Number input + extras list ──────────────────────────── */
+/* Wrapper for input + suffix; hint (if present) goes BELOW as a sibling so
+   it never disrupts row layouts. Visual chrome (border, radius, mono font)
+   matches .calc-segments so the eye reads it as part of the same family. */
+.calc-num-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.calc-num {
+  align-items: center;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: flex;
+  gap: 6px;
+  padding: 0 10px;
+  transition: border-color 120ms ease, background 120ms ease;
+  width: 100%;
+}
+
+.calc-num:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+}
+
+.calc-num input {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  flex: 1 1 auto;
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1, "ss01" 1;
+  font-size: 13px;
+  font-weight: 500;
+  height: 32px;
+  letter-spacing: -0.01em;
+  min-width: 0;
+  outline: none;
+  padding: 0;
+}
+
+.calc-num input::placeholder {
+  color: var(--fg-faint);
+}
+
+.calc-num--compact {
+  flex: 0 0 auto;
+  width: 130px;
+}
+
+.calc-num--compact input {
+  font-size: 12px;
+  height: 28px;
+  text-align: right;
+}
+
+.calc-num--disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.calc-num-suffix {
+  color: var(--fg-faint);
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.calc-num-hint {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+/* Extras list — switch on the left, label/hint stack in the middle, amount
+   input pinned to the right. Flex (not grid) so the switch can sit at its
+   own intrinsic width without blowing out the row's column template, and
+   the input can keep its fixed 130px without competing for space. */
+.calc-extras {
+  display: flex;
+  flex-direction: column;
+}
+
+.calc-extra-row {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 10px;
+  padding: 12px 0;
+}
+
+.calc-extra-row:first-child {
+  border-top: 0;
+}
+
+.calc-extra-row[data-enabled="false"] .calc-extra-label,
+.calc-extra-row[data-enabled="false"] .calc-extra-hint {
+  color: var(--fg-faint);
+}
+
+.calc-extra-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.calc-extra-label {
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.calc-extra-hint {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
 /* ─── Responsive ──────────────────────────────────────────── */
 
 @media (max-width: 1180px) {

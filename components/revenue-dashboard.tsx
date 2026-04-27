@@ -16,8 +16,15 @@ import {
   type ChartConfig
 } from "@/components/ui/chart";
 import { Switch } from "@/components/ui/switch";
+import {
+  NET_CALCULATOR_DEFAULTS,
+  NetCalculatorSheet,
+  NetCalculatorTrigger,
+  type NetCalculatorState
+} from "@/components/net-calculator-sheet";
 import { createDemoDashboard } from "@/lib/demo-data";
 import { RANGE_OPTIONS, getRangeConfig, type RangeKey } from "@/lib/ranges";
+import type { ExtrasInputs } from "@/lib/tax-calculator";
 import type { DashboardChart, DashboardPoint } from "@/lib/chart-normalizer";
 
 // Apple/Google take a 15% revenue share on subscriptions after year one (and on
@@ -83,6 +90,11 @@ export function RevenueDashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [appleCut, setAppleCut] = useState(false);
+  // Net-in-pocket calculator state. Sheet open/close is intentionally *not*
+  // persisted — it's transient UI; only the chosen tax knobs survive reloads
+  // (via URL params for shareability, falling back to localStorage).
+  const [calcOpen, setCalcOpen] = useState(false);
+  const [calcState, setCalcState] = useState<NetCalculatorState>(NET_CALCULATOR_DEFAULTS);
   // Latch flips true after URL → state hydration completes. Until then we
   // skip the state → URL writer to avoid clobbering an incoming `?range=7d`
   // with the default `28d` during the first commit.
@@ -116,6 +128,35 @@ export function RevenueDashboard() {
       }
     }
 
+    // Calculator knobs hydrate from two layers:
+    //   1. localStorage (`rc-calc`, JSON-encoded full state) → personal prefs
+    //      that survive across visits without polluting the URL.
+    //   2. URL params → take precedence so shared links (e.g. "?reg=startup&inpsm=fixed")
+    //      override the stored prefs.
+    // Extras stay localStorage-only on purpose: 8 amounts × 2 fields would
+    // bloat the URL beyond shareability.
+    const next: NetCalculatorState = readStoredCalcState();
+
+    const regimeUrl = params.get("reg");
+    if (regimeUrl === "startup" || regimeUrl === "regime") next.regime = regimeUrl;
+
+    const inpsUrl = params.get("inps");
+    if (inpsUrl === "full" || inpsUrl === "partial") next.inps = inpsUrl;
+
+    const tierUrl = params.get("apt");
+    if (tierUrl === "sbp" || tierUrl === "standard") next.appleTier = tierUrl;
+
+    const inpsModeUrl = params.get("inpsm");
+    if (inpsModeUrl === "fixed" || inpsModeUrl === "percent") next.inpsMode = inpsModeUrl;
+
+    const inpsFixedUrl = params.get("inpsf");
+    if (inpsFixedUrl !== null) {
+      const parsed = Number(inpsFixedUrl);
+      if (Number.isFinite(parsed) && parsed >= 0) next.inpsFixed = parsed;
+    }
+
+    setCalcState(next);
+
     setHydratedFromUrl(true);
   }, []);
 
@@ -130,8 +171,18 @@ export function RevenueDashboard() {
     setOrDelete(url.searchParams, "range", rangeKey, "28d");
     setOrDelete(url.searchParams, "currency", currency, "USD");
     setOrDelete(url.searchParams, "cut", appleCut ? "1" : "0", "0");
+    setOrDelete(url.searchParams, "reg", calcState.regime, NET_CALCULATOR_DEFAULTS.regime);
+    setOrDelete(url.searchParams, "inps", calcState.inps, NET_CALCULATOR_DEFAULTS.inps);
+    setOrDelete(url.searchParams, "apt", calcState.appleTier, NET_CALCULATOR_DEFAULTS.appleTier);
+    setOrDelete(url.searchParams, "inpsm", calcState.inpsMode, NET_CALCULATOR_DEFAULTS.inpsMode);
+    setOrDelete(
+      url.searchParams,
+      "inpsf",
+      String(calcState.inpsFixed),
+      String(NET_CALCULATOR_DEFAULTS.inpsFixed)
+    );
     window.history.replaceState(null, "", url.toString());
-  }, [rangeKey, currency, appleCut, hydratedFromUrl]);
+  }, [rangeKey, currency, appleCut, calcState, hydratedFromUrl]);
 
   function handleAppleCutChange(next: boolean) {
     setAppleCut(next);
@@ -144,12 +195,33 @@ export function RevenueDashboard() {
     }
   }
 
+  // Mirror the Apple-cut handler: state changes flow through here so we can
+  // persist the user's calculator config across reloads. URL sync happens
+  // automatically via the state→URL effect above; localStorage gets the
+  // full state (incl. extras + amounts) as a single JSON blob to keep the
+  // schema flexible without growing per-field key counts.
+  function handleCalcStateChange(next: NetCalculatorState) {
+    setCalcState(next);
+    try {
+      localStorage.setItem("rc-calc", JSON.stringify(next));
+    } catch {
+      /* noop */
+    }
+  }
+
   const cacheKey = `${rangeKey}:${currency}`;
   const cached = cache[cacheKey];
   const rawData = cached?.payload;
   // Single transform point: scale every currency-shaped field by NET_FACTOR
   // when the toggle is on. Downstream components stay agnostic to the cut.
   const data = useMemo(() => (rawData ? applyAppleCut(rawData, appleCut) : rawData), [rawData, appleCut]);
+
+  // Calculator gross input is always derived from rawData (never from `data`)
+  // so the Apple cut toggle in the topbar stays purely a *display* concern —
+  // the calculator subtracts its own commission internally based on the
+  // chosen tier (sbp/standard) and would otherwise double-count.
+  const calcGross = useMemo(() => extractGrossPeriod(rawData), [rawData]);
+  const calcPeriodDays = useMemo(() => extractPeriodDays(rawData), [rawData]);
 
   // Hooks must be unconditional; guard against `data` being undefined during skeleton.
   // Headline strip = first 5 charts (revenue, mrr, arr, actives, churn) + a synthetic
@@ -235,11 +307,23 @@ export function RevenueDashboard() {
         setCurrency={setCurrency}
         appleCut={appleCut}
         onAppleCutChange={handleAppleCutChange}
+        onOpenCalculator={() => setCalcOpen(true)}
         isLoading={isLoading}
         configured={data?.configured ?? false}
         fetchedAt={data?.fetchedAt}
         projectId={data?.projectId}
         app={data?.app ?? null}
+      />
+
+      <NetCalculatorSheet
+        open={calcOpen}
+        onOpenChange={setCalcOpen}
+        state={calcState}
+        onStateChange={handleCalcStateChange}
+        grossPeriod={calcGross}
+        periodDays={calcPeriodDays}
+        periodLabel={data?.range.label ?? getRangeConfig(rangeKey).label}
+        currency={currency}
       />
 
       {noticeMessage && <Notice message={noticeMessage} />}
@@ -351,6 +435,7 @@ function TopBar({
   setCurrency,
   appleCut,
   onAppleCutChange,
+  onOpenCalculator,
   isLoading,
   configured,
   fetchedAt,
@@ -363,6 +448,7 @@ function TopBar({
   setCurrency: (currency: CurrencyCode) => void;
   appleCut: boolean;
   onAppleCutChange: (next: boolean) => void;
+  onOpenCalculator: () => void;
   isLoading: boolean;
   configured: boolean;
   fetchedAt?: string;
@@ -383,6 +469,8 @@ function TopBar({
         </div>
 
         <div className="topbar-spacer" />
+
+        <NetCalculatorTrigger onClick={onOpenCalculator} />
 
         <AppleCutToggle checked={appleCut} onCheckedChange={onAppleCutChange} />
 
@@ -1346,6 +1434,95 @@ function readFirstNestedSummaryNumber(summary: Record<string, unknown>, bucket: 
 
   const value = Object.values(nested as Record<string, unknown>).find((entry) => typeof entry === "number");
   return typeof value === "number" ? value : null;
+}
+
+// Reads the calculator state from localStorage if present. Defensive against
+// shape drift (older blobs missing newer fields, hand-edited values) by
+// validating each field individually and merging into the current defaults
+// rather than blindly trusting JSON.parse. On any error we fall back to
+// defaults — the user can always re-enter their preferences.
+function readStoredCalcState(): NetCalculatorState {
+  if (typeof window === "undefined") return NET_CALCULATOR_DEFAULTS;
+  try {
+    const raw = localStorage.getItem("rc-calc");
+    if (!raw) return NET_CALCULATOR_DEFAULTS;
+    const parsed = JSON.parse(raw) as Partial<NetCalculatorState>;
+    return mergeCalcState(NET_CALCULATOR_DEFAULTS, parsed);
+  } catch {
+    return NET_CALCULATOR_DEFAULTS;
+  }
+}
+
+// Validates each known field; unknown / malformed values fall back to the
+// default. This isolates the trust boundary between localStorage (untrusted)
+// and the rest of the app (typed).
+function mergeCalcState(base: NetCalculatorState, patch: Partial<NetCalculatorState>): NetCalculatorState {
+  const out: NetCalculatorState = { ...base, extras: { ...base.extras } };
+
+  if (patch.regime === "startup" || patch.regime === "regime") out.regime = patch.regime;
+  if (patch.inpsMode === "fixed" || patch.inpsMode === "percent") out.inpsMode = patch.inpsMode;
+  if (patch.inps === "full" || patch.inps === "partial") out.inps = patch.inps;
+  if (patch.appleTier === "sbp" || patch.appleTier === "standard") out.appleTier = patch.appleTier;
+
+  if (typeof patch.inpsFixed === "number" && Number.isFinite(patch.inpsFixed) && patch.inpsFixed >= 0) {
+    out.inpsFixed = patch.inpsFixed;
+  }
+
+  if (patch.extras && typeof patch.extras === "object") {
+    out.extras = mergeExtras(base.extras, patch.extras);
+  }
+
+  return out;
+}
+
+function mergeExtras(base: ExtrasInputs, patch: Partial<ExtrasInputs>): ExtrasInputs {
+  const out: ExtrasInputs = {
+    bollo: { ...base.bollo },
+    commercialista: { ...base.commercialista },
+    pecFirma: { ...base.pecFirma },
+    cciaa: { ...base.cciaa }
+  };
+  for (const key of ["bollo", "commercialista", "pecFirma", "cciaa"] as const) {
+    const incoming = patch[key];
+    if (incoming && typeof incoming === "object") {
+      if (typeof incoming.enabled === "boolean") out[key].enabled = incoming.enabled;
+      if (typeof incoming.amount === "number" && Number.isFinite(incoming.amount) && incoming.amount >= 0) {
+        out[key].amount = incoming.amount;
+      }
+    }
+  }
+  return out;
+}
+
+// Sum of every revenue point in the chart's window — works across daily,
+// weekly and monthly resolutions because RC's bucket value is the per-bucket
+// total. We pass `rawData` (never the appleCut-applied `data`) so the
+// calculator owns the commission split.
+function extractGrossPeriod(rawData: DashboardResponse | undefined): number | null {
+  if (!rawData) return null;
+  const revenueChart = rawData.charts.find((chart) => chart.name === "revenue") ?? rawData.charts[0];
+  if (!revenueChart || revenueChart.data.length === 0) return null;
+  return revenueChart.data.reduce((acc, point) => acc + point.value, 0);
+}
+
+// Period length for annualization. Prefers the range's explicit start/end
+// dates; for "all" (no startDate) falls back to the first→last data point
+// distance, with a +1 to count both endpoints inclusively.
+function extractPeriodDays(rawData: DashboardResponse | undefined): number {
+  if (!rawData) return 0;
+  const range = rawData.range;
+  if (range.startDate && range.endDate) {
+    const start = new Date(range.startDate);
+    const end = new Date(range.endDate);
+    return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1);
+  }
+  const points = rawData.charts.find((chart) => chart.name === "revenue")?.data ?? rawData.charts[0]?.data;
+  if (points && points.length >= 2) {
+    const first = new Date(points[0].date);
+    const last = new Date(points[points.length - 1].date);
+    return Math.max(1, Math.round((last.getTime() - first.getTime()) / 86_400_000) + 1);
+  }
+  return 0;
 }
 
 // RevenueCat's overview endpoint uses ids that mostly match v2 chart slugs.
