@@ -846,6 +846,70 @@ p {
   animation: fade-in 320ms ease both;
 }
 
+/* ─── Settings popover ────────────────────────────────────── */
+/* Reuses .theme-toggle's chrome so the gear icon visually clusters with
+   the existing 28×28 sun/moon button. The popover surface itself replaces
+   shadcn's default tailwind card chrome with our hairline aesthetic. */
+.settings-popover {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 24px -12px color-mix(in srgb, var(--fg) 25%, transparent);
+  color: var(--fg);
+  padding: 14px 14px 12px;
+  width: 280px;
+}
+
+.settings-eyebrow {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  margin-bottom: 12px;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-section-title {
+  color: var(--fg-mute);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.settings-row {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+.settings-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-row-label {
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.settings-row-hint {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+}
+
 /* ─── Net calculator (Sheet) ──────────────────────────────── */
 /* Trigger lives in the topbar — same chrome as .topbar-toggle but the icon
    does the talking instead of a percent label. */

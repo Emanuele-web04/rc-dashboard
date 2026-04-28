@@ -7,7 +7,15 @@
 // Depends on: lucide-react, lib/ranges, lib/demo-data, lib/chart-normalizer
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDownRight, ArrowUpRight, Moon, RefreshCw, Sun, TriangleAlert } from "lucide-react";
+import {
+  ArrowDownRight,
+  ArrowUpRight,
+  Moon,
+  RefreshCw,
+  Settings as SettingsIcon,
+  Sun,
+  TriangleAlert
+} from "lucide-react";
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
   ChartContainer,
@@ -16,6 +24,11 @@ import {
   type ChartConfig
 } from "@/components/ui/chart";
 import { Switch } from "@/components/ui/switch";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger
+} from "@/components/ui/popover";
 import {
   NET_CALCULATOR_DEFAULTS,
   NetCalculatorSheet,
@@ -90,6 +103,12 @@ export function RevenueDashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [appleCut, setAppleCut] = useState(false);
+  // Locale-specific feature flag. Off by default so the dashboard ships
+  // generic for OSS use; users opt in via the Settings popover and the
+  // Italian forfettario calculator (button + sheet) becomes visible.
+  // Persisted via URL (`?it=1`) for shareable demo links + localStorage
+  // (`rc-italian-taxes`) for personal preference across visits.
+  const [italianTaxes, setItalianTaxes] = useState(false);
   // Net-in-pocket calculator state. Sheet open/close is intentionally *not*
   // persisted — it's transient UI; only the chosen tax knobs survive reloads
   // (via URL params for shareability, falling back to localStorage).
@@ -125,6 +144,17 @@ export function RevenueDashboard() {
         if (localStorage.getItem("rc-apple-cut") === "1") setAppleCut(true);
       } catch {
         /* private mode etc. — leave default false. */
+      }
+    }
+
+    const italianFromUrl = params.get("it");
+    if (italianFromUrl === "1" || italianFromUrl === "0") {
+      setItalianTaxes(italianFromUrl === "1");
+    } else {
+      try {
+        if (localStorage.getItem("rc-italian-taxes") === "1") setItalianTaxes(true);
+      } catch {
+        /* noop */
       }
     }
 
@@ -171,18 +201,31 @@ export function RevenueDashboard() {
     setOrDelete(url.searchParams, "range", rangeKey, "28d");
     setOrDelete(url.searchParams, "currency", currency, "USD");
     setOrDelete(url.searchParams, "cut", appleCut ? "1" : "0", "0");
-    setOrDelete(url.searchParams, "reg", calcState.regime, NET_CALCULATOR_DEFAULTS.regime);
-    setOrDelete(url.searchParams, "inps", calcState.inps, NET_CALCULATOR_DEFAULTS.inps);
-    setOrDelete(url.searchParams, "apt", calcState.appleTier, NET_CALCULATOR_DEFAULTS.appleTier);
-    setOrDelete(url.searchParams, "inpsm", calcState.inpsMode, NET_CALCULATOR_DEFAULTS.inpsMode);
-    setOrDelete(
-      url.searchParams,
-      "inpsf",
-      String(calcState.inpsFixed),
-      String(NET_CALCULATOR_DEFAULTS.inpsFixed)
-    );
+    setOrDelete(url.searchParams, "it", italianTaxes ? "1" : "0", "0");
+    // Calculator-specific params are only meaningful when the Italian-taxes
+    // feature is enabled. Strip them otherwise so the URL stays minimal for
+    // OSS users who never touch this feature, and to avoid leaking stale
+    // calc settings in shared links.
+    if (italianTaxes) {
+      setOrDelete(url.searchParams, "reg", calcState.regime, NET_CALCULATOR_DEFAULTS.regime);
+      setOrDelete(url.searchParams, "inps", calcState.inps, NET_CALCULATOR_DEFAULTS.inps);
+      setOrDelete(url.searchParams, "apt", calcState.appleTier, NET_CALCULATOR_DEFAULTS.appleTier);
+      setOrDelete(url.searchParams, "inpsm", calcState.inpsMode, NET_CALCULATOR_DEFAULTS.inpsMode);
+      setOrDelete(
+        url.searchParams,
+        "inpsf",
+        String(calcState.inpsFixed),
+        String(NET_CALCULATOR_DEFAULTS.inpsFixed)
+      );
+    } else {
+      url.searchParams.delete("reg");
+      url.searchParams.delete("inps");
+      url.searchParams.delete("apt");
+      url.searchParams.delete("inpsm");
+      url.searchParams.delete("inpsf");
+    }
     window.history.replaceState(null, "", url.toString());
-  }, [rangeKey, currency, appleCut, calcState, hydratedFromUrl]);
+  }, [rangeKey, currency, appleCut, italianTaxes, calcState, hydratedFromUrl]);
 
   function handleAppleCutChange(next: boolean) {
     setAppleCut(next);
@@ -190,6 +233,19 @@ export function RevenueDashboard() {
     // visits without an explicit `?cut=` param.
     try {
       localStorage.setItem("rc-apple-cut", next ? "1" : "0");
+    } catch {
+      /* noop */
+    }
+  }
+
+  function handleItalianTaxesChange(next: boolean) {
+    setItalianTaxes(next);
+    // Auto-close the calculator drawer if the feature is being disabled —
+    // otherwise the sheet would stay mounted but with its trigger gone,
+    // which is a confusing intermediate state.
+    if (!next) setCalcOpen(false);
+    try {
+      localStorage.setItem("rc-italian-taxes", next ? "1" : "0");
     } catch {
       /* noop */
     }
@@ -307,6 +363,8 @@ export function RevenueDashboard() {
         setCurrency={setCurrency}
         appleCut={appleCut}
         onAppleCutChange={handleAppleCutChange}
+        italianTaxes={italianTaxes}
+        onItalianTaxesChange={handleItalianTaxesChange}
         onOpenCalculator={() => setCalcOpen(true)}
         isLoading={isLoading}
         configured={data?.configured ?? false}
@@ -315,16 +373,18 @@ export function RevenueDashboard() {
         app={data?.app ?? null}
       />
 
-      <NetCalculatorSheet
-        open={calcOpen}
-        onOpenChange={setCalcOpen}
-        state={calcState}
-        onStateChange={handleCalcStateChange}
-        grossPeriod={calcGross}
-        periodDays={calcPeriodDays}
-        periodLabel={data?.range.label ?? getRangeConfig(rangeKey).label}
-        currency={currency}
-      />
+      {italianTaxes && (
+        <NetCalculatorSheet
+          open={calcOpen}
+          onOpenChange={setCalcOpen}
+          state={calcState}
+          onStateChange={handleCalcStateChange}
+          grossPeriod={calcGross}
+          periodDays={calcPeriodDays}
+          periodLabel={data?.range.label ?? getRangeConfig(rangeKey).label}
+          currency={currency}
+        />
+      )}
 
       {noticeMessage && <Notice message={noticeMessage} />}
 
@@ -435,6 +495,8 @@ function TopBar({
   setCurrency,
   appleCut,
   onAppleCutChange,
+  italianTaxes,
+  onItalianTaxesChange,
   onOpenCalculator,
   isLoading,
   configured,
@@ -448,6 +510,8 @@ function TopBar({
   setCurrency: (currency: CurrencyCode) => void;
   appleCut: boolean;
   onAppleCutChange: (next: boolean) => void;
+  italianTaxes: boolean;
+  onItalianTaxesChange: (next: boolean) => void;
   onOpenCalculator: () => void;
   isLoading: boolean;
   configured: boolean;
@@ -470,7 +534,7 @@ function TopBar({
 
         <div className="topbar-spacer" />
 
-        <NetCalculatorTrigger onClick={onOpenCalculator} />
+        {italianTaxes && <NetCalculatorTrigger onClick={onOpenCalculator} />}
 
         <AppleCutToggle checked={appleCut} onCheckedChange={onAppleCutChange} />
 
@@ -507,6 +571,10 @@ function TopBar({
         </div>
 
         <ThemeToggle />
+        <SettingsMenu
+          italianTaxes={italianTaxes}
+          onItalianTaxesChange={onItalianTaxesChange}
+        />
 
         <div className="topbar-meta" data-loading={isLoading} aria-live="polite">
           {isLoading ? (
@@ -561,6 +629,81 @@ function ThemeToggle() {
         <Moon size={14} strokeWidth={1.8} />
       )}
     </button>
+  );
+}
+
+// Topbar settings popover. Currently hosts a single feature flag
+// ("Italian taxes" → forfettario calculator), but the layout is built so we
+// can add more locale/feature toggles without changing the trigger or the
+// container, just append rows. Uses shadcn Popover (Radix Dialog under the
+// hood) so focus management, click-outside and escape behaviour come for
+// free without polluting the dashboard with extra global listeners.
+function SettingsMenu({
+  italianTaxes,
+  onItalianTaxesChange
+}: {
+  italianTaxes: boolean;
+  onItalianTaxesChange: (next: boolean) => void;
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="theme-toggle settings-toggle"
+          aria-label="Open settings"
+          title="Settings"
+        >
+          <SettingsIcon size={14} strokeWidth={1.8} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        sideOffset={6}
+        className="settings-popover"
+      >
+        <div className="settings-eyebrow">SETTINGS</div>
+        <div className="settings-section">
+          <div className="settings-section-title">Locale features</div>
+          <SettingsRow
+            label="Italian taxes"
+            hint="Show forfettario net-in-pocket calculator"
+            checked={italianTaxes}
+            onCheckedChange={onItalianTaxesChange}
+            ariaLabel="Toggle Italian forfettario tax calculator"
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function SettingsRow({
+  label,
+  hint,
+  checked,
+  onCheckedChange,
+  ariaLabel
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <label className="settings-row">
+      <div className="settings-row-text">
+        <span className="settings-row-label">{label}</span>
+        {hint && <span className="settings-row-hint">{hint}</span>}
+      </div>
+      <Switch
+        size="sm"
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        aria-label={ariaLabel}
+      />
+    </label>
   );
 }
 
