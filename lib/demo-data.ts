@@ -44,6 +44,8 @@ export function createDemoDashboard(range: RangeConfig) {
     configured: false,
     message: "Add REVENUECAT_API_KEY to .env.local to replace demo data.",
     projectId: "demo",
+    projectIds: ["demo"],
+    projects: [{ id: "demo", name: "demo" }],
     currency: "USD",
     range,
     overview: null,

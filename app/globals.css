@@ -359,6 +359,191 @@ p {
   color: var(--accent);
 }
 
+/* ─── Projects selector (inline popover) ───────────────────── */
+
+.projects-tab-sub {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.projects-popover {
+  width: 340px;
+  padding: 14px 14px 12px;
+}
+
+.projects-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.projects-row {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.projects-row input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.projects-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.projects-row-name {
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  display: block;
+}
+
+.projects-row-id {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  display: block;
+}
+
+.projects-edit-btn {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--fg-faint);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+
+.projects-edit-btn:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+}
+
+/* ─── Project rename dialog ────────────────────────────────── */
+
+.projects-rename-dialog {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--fg);
+  box-shadow: 0 18px 50px -24px color-mix(in srgb, var(--fg) 35%, transparent);
+}
+
+.projects-rename-body {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.projects-rename-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.projects-rename-label-text {
+  color: var(--fg-mute);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.projects-rename-input {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+}
+
+.projects-rename-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+
+.projects-rename-hint {
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+
+.projects-rename-error {
+  color: var(--warn-fg);
+  font-size: 11px;
+}
+
+.projects-rename-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* ─── Base dialog primitive (project-local style) ──────────── */
+
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  background: rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(3px);
+}
+
+.dialog-content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 121;
+  width: min(92vw, 560px);
+  transform: translate(-50%, -50%);
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px;
+  box-shadow: 0 24px 70px -35px color-mix(in srgb, var(--fg) 35%, transparent);
+  color: var(--fg);
+}
+
+.dialog-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+}
+
+.dialog-close:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+}
+
 .theme-toggle {
   align-items: center;
   background: transparent;

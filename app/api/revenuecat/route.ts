@@ -5,6 +5,8 @@
 // Depends on: lib/revenuecat, lib/ranges, lib/chart-normalizer
 
 import { NextResponse } from "next/server";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { normalizeChart, type DashboardChart, type DashboardPoint } from "@/lib/chart-normalizer";
 import { DEFAULT_CHARTS, getRevenueCatConfig, revenueCatFetch } from "@/lib/revenuecat";
 import { getRangeConfig, type RangeKey } from "@/lib/ranges";
@@ -25,7 +27,12 @@ export const dynamic = "force-dynamic";
 
 type DashboardPayload = {
   configured: boolean;
+  // First selected project id (kept for backwards compatibility with the UI).
   projectId: string;
+  // Selected project ids that were aggregated into this dashboard.
+  projectIds: string[];
+  // Available project ids (used to render the project selector in the UI).
+  projects: Array<{ id: string; name: string }>;
   app?: ProjectAppSummary | null;
   currency: string;
   range: ReturnType<typeof getRangeConfig>;
@@ -65,11 +72,11 @@ export async function GET(request: Request) {
   const range = getRangeConfig(rangeKey);
   const config = getRevenueCatConfig();
 
-  if (!config.apiKey) {
+  if (!config.apiKey && !config.projectKeys && !config.projectId && !(config.projectIds && config.projectIds.length > 0)) {
     return NextResponse.json(
       {
         configured: false,
-        message: "Missing REVENUECAT_API_KEY in .env.local",
+        message: "Missing RevenueCat credentials. Set REVENUECAT_PROJECT_KEYS (preferred) or REVENUECAT_API_KEY + REVENUECAT_PROJECT_ID/REVENUECAT_PROJECT_IDS in .env.local.",
         range,
         currency,
         charts: []
@@ -79,9 +86,34 @@ export async function GET(request: Request) {
   }
 
   try {
-    const apiKey = config.apiKey;
-    const projectId = config.projectId ?? (await resolveFirstProjectId(apiKey));
-    const cacheKey = `${projectId}:${currency}:${range.key}:${range.startDate ?? "all"}:${range.endDate ?? "now"}`;
+    const requestedProjectsParam = url.searchParams.get("projects");
+    const requestedProjectIds = requestedProjectsParam
+      ? requestedProjectsParam
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : null;
+
+    const availableProjectIds: string[] = config.projectKeys
+      ? Object.keys(config.projectKeys)
+      : config.projectIds ?? (config.projectId ? [config.projectId] : []);
+
+    const resolvedAvailableProjectIds =
+      availableProjectIds.length > 0
+        ? availableProjectIds
+        : config.apiKey
+          ? [await resolveFirstProjectId(config.apiKey)]
+          : [];
+
+    const selectedProjectIds =
+      requestedProjectIds && requestedProjectIds.length > 0 ? requestedProjectIds.filter((id) => resolvedAvailableProjectIds.includes(id)) : resolvedAvailableProjectIds;
+
+    if (selectedProjectIds.length === 0) {
+      throw new Error("No RevenueCat project ids available for the current configuration/selection.");
+    }
+
+    const projectsKey = selectedProjectIds.slice().sort().join(",");
+    const cacheKey = `${projectsKey}:${currency}:${range.key}:${range.startDate ?? "all"}:${range.endDate ?? "now"}`;
     const cached = dashboardCache.get(cacheKey);
 
     if (cached && cached.freshUntil > Date.now()) {
@@ -95,7 +127,7 @@ export async function GET(request: Request) {
 
     const comparisonRange = getPreviousRange(range);
     const query = buildChartQuery(range, currency, comparisonRange);
-    const request = fetchDashboardPayload(projectId, apiKey, currency, range, query);
+    const request = fetchDashboardPayload(selectedProjectIds, resolvedAvailableProjectIds, config, currency, range, query);
     inflightDashboardRequests.set(cacheKey, request);
     const payload = await request.finally(() => inflightDashboardRequests.delete(cacheKey));
     const hasRateLimitedChart = payload.charts.some((chart) => chart.error?.includes("429"));
@@ -180,33 +212,61 @@ function findAnyStaleDashboard(rangeKey: RangeKey, currency: string) {
   return null;
 }
 
-// Fetches the compact chart set used by the visible dashboard without over-spending the API rate limit.
+// Fetches and aggregates the compact chart set used by the visible dashboard.
+// Supports multiple RevenueCat projects by summing/weighting bucket values.
 async function fetchDashboardPayload(
-  projectId: string,
-  apiKey: string,
+  selectedProjectIds: string[],
+  availableProjectIds: string[],
+  config: ReturnType<typeof getRevenueCatConfig>,
   currency: string,
   range: ReturnType<typeof getRangeConfig>,
   query: Record<string, string>
 ): Promise<DashboardPayload> {
-  const app = await resolveProjectApp(projectId, apiKey);
-  const overviewRequest =
-    range.key === "28d"
-      ? revenueCatFetch(`/projects/${projectId}/metrics/overview`, apiKey, { currency })
-      : Promise.resolve(null);
-  const [overview, today, ...rawCharts] = await Promise.all([
-    overviewRequest,
-    fetchTodaySeries(projectId, apiKey, currency),
-    ...DASHBOARD_CHARTS.map((chart) =>
-      revenueCatFetch(`/projects/${projectId}/charts/${chart.name}`, apiKey, query)
-        .then((data) => normalizeChart(chart, data))
-        .catch((error) => normalizeChart(chart, null, error))
-    )
-  ]);
-  const charts = addMetricComparisons(rawCharts, range);
+  const projectKeys = config.projectKeys ?? {};
+  const projectNames = await resolveProjectNames(availableProjectIds, config);
+
+  async function fetchProjectParts(projectId: string) {
+    const projectApiKey = projectKeys[projectId] ?? config.apiKey;
+    if (!projectApiKey) {
+      throw new Error(`Missing api key for RevenueCat project ${projectId}. Add it to REVENUECAT_PROJECT_KEYS.`);
+    }
+
+    const overview =
+      range.key === "28d"
+        ? await revenueCatFetch(`/projects/${projectId}/metrics/overview`, projectApiKey, { currency }).catch(() => null)
+        : null;
+
+    const today = await fetchTodaySeries(projectId, projectApiKey, currency);
+
+    const rawCharts = await Promise.all(
+      DASHBOARD_CHARTS.map((chart) =>
+        revenueCatFetch(`/projects/${projectId}/charts/${chart.name}`, projectApiKey, query)
+          .then((data) => normalizeChart(chart, data))
+          .catch((error) => normalizeChart(chart, null, error))
+      )
+    );
+
+    return { projectId, projectApiKey, overview, today, rawCharts };
+  }
+
+  const projectParts = await Promise.all(selectedProjectIds.map((pid) => fetchProjectParts(pid)));
+
+  const aggregatedRawCharts = aggregateChartsAcrossProjects(projectParts);
+  const charts = addMetricComparisons(aggregatedRawCharts, range);
+
+  const today = aggregateToday(projectParts.map((p) => p.today));
+
+  const overview = aggregateOverview(range, projectParts.map((p) => p.overview), charts);
+
+  const firstProjectId = selectedProjectIds[0];
+  const firstProjectApiKey = projectParts[0]?.projectApiKey;
+  const app = firstProjectId && firstProjectApiKey ? await resolveProjectApp(firstProjectId, firstProjectApiKey) : null;
 
   return {
     configured: true,
-    projectId,
+    projectId: firstProjectId,
+    projectIds: selectedProjectIds,
+    projects: availableProjectIds.map((id) => ({ id, name: projectNames[id] ?? "No name" })),
     app,
     currency,
     range,
@@ -215,6 +275,260 @@ async function fetchDashboardPayload(
     today,
     fetchedAt: new Date().toISOString()
   };
+}
+
+async function resolveProjectNames(
+  projectIds: string[],
+  config: ReturnType<typeof getRevenueCatConfig>
+): Promise<Record<string, string>> {
+  const names: Record<string, string> = {};
+  const fileNames = await readProjectNamesFile();
+  const attemptedKeys = new Set<string>();
+
+  const candidateKeys = [
+    ...(config.projectKeys ? Object.values(config.projectKeys) : []),
+    ...(config.apiKey ? [config.apiKey] : [])
+  ].filter(Boolean);
+
+  for (const apiKey of candidateKeys) {
+    if (attemptedKeys.has(apiKey)) continue;
+    attemptedKeys.add(apiKey);
+
+    try {
+      const projects = await revenueCatFetch("/projects", apiKey, { limit: "100" });
+      const items = Array.isArray(projects?.items) ? projects.items : [];
+      for (const item of items) {
+        const id = typeof item?.id === "string" ? item.id : null;
+        const name = typeof item?.name === "string" ? item.name : null;
+        if (id && name && projectIds.includes(id) && !names[id]) {
+          names[id] = name;
+        }
+      }
+
+      if (projectIds.every((id) => names[id])) {
+        break;
+      }
+    } catch {
+      // Missing `project_configuration:projects:read` is expected for some keys.
+    }
+  }
+
+  for (const id of projectIds) {
+    if (!names[id] && fileNames[id]) {
+      names[id] = fileNames[id];
+    }
+  }
+
+  return names;
+}
+
+async function readProjectNamesFile(): Promise<Record<string, string>> {
+  try {
+    const filePath = path.join(process.cwd(), "project-names.json");
+    const raw = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        ([key, value]) => typeof key === "string" && typeof value === "string" && value.trim().length > 0
+      )
+    ) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function aggregateToday(parts: TodayPayload[]) {
+  const yesterdayValues = parts.map((p) => p.yesterdayUtcValue).filter((v): v is number => typeof v === "number");
+  const todayValues = parts.map((p) => p.todayUtcValue).filter((v): v is number => typeof v === "number");
+
+  const yesterdayUtcValue = yesterdayValues.length ? yesterdayValues.reduce((a, b) => a + b, 0) : null;
+  const todayUtcValue = todayValues.length ? todayValues.reduce((a, b) => a + b, 0) : null;
+
+  const todayUtcDate = parts.find((p) => p.todayUtcDate)?.todayUtcDate ?? parts[0]?.todayUtcDate ?? formatDate(new Date());
+  return {
+    yesterdayUtcValue,
+    todayUtcValue,
+    todayUtcDate,
+    asOfMs: Date.now()
+  };
+}
+
+function aggregateOverview(
+  range: ReturnType<typeof getRangeConfig>,
+  overviews: Array<any>,
+  charts: DashboardChart[]
+) {
+  if (range.key !== "28d") return null;
+
+  const metrics = new Map<string, any>();
+  for (const overview of overviews) {
+    const list: any[] = overview?.metrics;
+    if (!Array.isArray(list)) continue;
+    for (const metric of list) {
+      if (!metric?.id) continue;
+      const existing = metrics.get(metric.id);
+      if (!existing) {
+        metrics.set(metric.id, { ...metric });
+        continue;
+      }
+      if (typeof metric.value === "number" && typeof existing.value === "number") {
+        existing.value += metric.value;
+      }
+    }
+  }
+
+  // Replace key values with the KPI-derived chart metrics so the UI
+  // doesn't depend on potentially missing overview ids per project.
+  const metricByChartName: Partial<Record<DashboardChart["name"], number>> = {};
+  for (const chart of charts) {
+    if (typeof chart.metricValue === "number") metricByChartName[chart.name] = chart.metricValue;
+  }
+  const overviewIdByChartName: Partial<Record<DashboardChart["name"], string>> = {
+    revenue: "revenue",
+    mrr: "mrr",
+    arr: "arr",
+    actives: "active_subscriptions",
+    churn: "churn",
+    customers_new: "new_customers",
+    actives_new: "active_subscriptions" // best-effort fallback if present
+  };
+
+  for (const [chartName, overviewId] of Object.entries(overviewIdByChartName) as Array<[string, string]>) {
+    const v = (metricByChartName as any)[chartName];
+    const entry = metrics.get(overviewId);
+    if (entry && typeof v === "number") {
+      entry.value = v;
+    }
+  }
+
+  return {
+    metrics: Array.from(metrics.values())
+  };
+}
+
+function aggregateChartsAcrossProjects(projectParts: Array<{ projectId: string; rawCharts: DashboardChart[] }>) {
+  const projectIds = projectParts.map((p) => p.projectId);
+  const chartsByProject = new Map<string, Map<string, DashboardChart>>();
+  for (const part of projectParts) {
+    const m = new Map<string, DashboardChart>();
+    for (const chart of part.rawCharts) m.set(chart.name, chart);
+    chartsByProject.set(part.projectId, m);
+  }
+
+  const aggregatedCharts: DashboardChart[] = [];
+  for (const def of DASHBOARD_CHARTS) {
+    const chartName = def.name;
+
+    // Collect all dates across selected projects for this chart.
+    const dateSet = new Set<string>();
+    const pointMapsByProject = new Map<string, Map<string, DashboardPoint>>();
+    const errorByProject: string[] = [];
+
+    for (const pid of projectIds) {
+      const chart = chartsByProject.get(pid)?.get(chartName);
+      if (chart?.error) errorByProject.push(chart.error);
+      const m = new Map<string, DashboardPoint>();
+      if (chart) {
+        for (const pt of chart.data) {
+          m.set(pt.date, pt);
+          dateSet.add(pt.date);
+        }
+      }
+      pointMapsByProject.set(pid, m);
+    }
+
+    const allDates = Array.from(dateSet).sort();
+    const percentWeighted =
+      chartName === "churn" ? "actives" : chartName === "refund_rate" ? "revenue" : null;
+
+    // Precompute denominator maps for percent-weighted charts.
+    const denominatorMapByProject: Map<string, Map<string, DashboardPoint>> | null =
+      percentWeighted && chartsByProject.size > 0
+        ? new Map(
+            projectIds.map((pid) => {
+              const denomChart = chartsByProject.get(pid)?.get(percentWeighted);
+              const dm = new Map<string, DashboardPoint>();
+              if (denomChart) {
+                for (const pt of denomChart.data) dm.set(pt.date, pt);
+              }
+              return [pid, dm];
+            })
+          )
+        : null;
+
+    const data: DashboardPoint[] = allDates.map((date) => {
+      let incomplete = false;
+
+      if (percentWeighted) {
+        let numerator = 0;
+        let denom = 0;
+        let churnOrRefundSum = 0;
+        let count = 0;
+
+        for (const pid of projectIds) {
+          const pt = pointMapsByProject.get(pid)?.get(date);
+          const dm = denominatorMapByProject?.get(pid);
+          const denomPt = dm?.get(date);
+
+          if (!pt) incomplete = true;
+          if (!denomPt) incomplete = true;
+
+          if (pt && denomPt) {
+            numerator += pt.value * denomPt.value;
+            denom += denomPt.value;
+            if (pt.incomplete || denomPt.incomplete) incomplete = true;
+          }
+
+          if (pt) {
+            churnOrRefundSum += pt.value;
+            count += 1;
+            if (pt.incomplete) incomplete = true;
+          }
+        }
+
+        const value = denom > 0 ? numerator / denom : count > 0 ? churnOrRefundSum / count : 0;
+        return { date, value, incomplete };
+      }
+
+      let sum = 0;
+      let any = false;
+      for (const pid of projectIds) {
+        const pt = pointMapsByProject.get(pid)?.get(date);
+        if (!pt) {
+          incomplete = true;
+          continue;
+        }
+        any = true;
+        sum += pt.value;
+        if (pt.incomplete) incomplete = true;
+      }
+
+      return { date, value: any ? sum : 0, incomplete };
+    });
+
+    const firstChartForMeta = projectParts.find((p) => p.rawCharts.some((c) => c.name === chartName))?.rawCharts.find(
+      (c) => c.name === chartName
+    );
+
+    const error = errorByProject.find((e) => e?.includes("429")) ?? errorByProject[0] ?? undefined;
+
+    aggregatedCharts.push({
+      ...(firstChartForMeta ?? {
+        ...def,
+        displayName: def.label,
+        yAxis: def.kind === "currency" ? "$" : def.kind === "percent" ? "%" : "",
+        latest: null,
+        previous: null,
+        delta: null,
+          summary: {},
+        data: []
+      }),
+      data,
+      error
+    });
+  }
+
+  return aggregatedCharts;
 }
 
 // Fetches the last two UTC daily revenue buckets regardless of the dashboard's
@@ -270,7 +584,14 @@ async function resolveProjectApp(projectId: string, apiKey: string): Promise<Pro
     return cached.app;
   }
 
-  const apps = await revenueCatFetch(`/projects/${projectId}/apps`, apiKey, { limit: "10" });
+  // Not all read-only keys include `project_configuration:apps:read`.
+  // In that case we keep the dashboard functional by returning `null` app identity.
+  let apps: any = null;
+  try {
+    apps = await revenueCatFetch(`/projects/${projectId}/apps`, apiKey, { limit: "10" });
+  } catch {
+    apps = null;
+  }
   const firstApp = Array.isArray(apps?.items) ? apps.items[0] : null;
   const app = firstApp
     ? {

@@ -24,13 +24,24 @@ Create `.env.local` from `.env.example`:
 
 ```bash
 REVENUECAT_API_KEY=your_read_only_secret_key
+REVENUECAT_PROJECT_KEYS=
+# Expected format: "projectId1:apiKey1,projectId2:apiKey2,..."
 REVENUECAT_PROJECT_ID=
+REVENUECAT_PROJECT_IDS=
+# Optional (UI): mapping used to show a friendly name per project id.
+# Expected format: "projectId1:name1,projectId2:name2,..."
+REVENUECAT_PROJECT_NAME_MAP=
 REVENUECAT_CURRENCY=USD
 ```
 
 Never commit a real RevenueCat secret key. `.env.local` and every `.env.*` file are gitignored; only `.env.example` (with placeholders) is allowed in the repo.
 
-`REVENUECAT_PROJECT_ID` is optional. When empty the app calls `/v2/projects` and uses the first project available to the API key.
+Multiproject:
+If you set `REVENUECAT_PROJECT_KEYS`, the dashboard uses that mapping (project id -> read-only API key) to fetch multiple projects at once.
+
+If you also set `REVENUECAT_PROJECT_NAME_MAP`, the UI shows project names instead of ids in the selector.
+
+If you leave it empty, `REVENUECAT_PROJECT_ID` / `REVENUECAT_PROJECT_IDS` may be used (single project or shared key for all).
 
 ## RevenueCat permissions
 
@@ -38,7 +49,7 @@ Use a restricted key with read-only scopes:
 
 - `charts_metrics:overview:read`
 - `charts_metrics:charts:read`
-- `project_configuration:projects:read` (only if you want automatic project discovery)
+- `project_configuration:projects:read` (only if you rely on automatic project discovery when project ids are not provided)
 
 The API key never reaches the browser. Client requests go to `/api/revenuecat`, and that server route is the only thing that talks to RevenueCat.
 

@@ -80,9 +80,31 @@ export const DEFAULT_CHARTS: ChartDefinition[] = [
 // ─── ENTRY POINT ─────────────────────────────────────────────
 
 export function getRevenueCatConfig() {
+  const apiKey = process.env.REVENUECAT_API_KEY;
+
+  const projectId = process.env.REVENUECAT_PROJECT_ID || undefined;
+  const projectIds = (process.env.REVENUECAT_PROJECT_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // Expected format: "projectId:apiKey,projectId2:apiKey2"
+  // (also accepts "projectId=apiKey" pairs).
+  const projectKeysRaw = (process.env.REVENUECAT_PROJECT_KEYS ?? "").trim();
+  const projectKeys: Record<string, string> = {};
+  if (projectKeysRaw) {
+    for (const pair of projectKeysRaw.split(",").map((s) => s.trim()).filter(Boolean)) {
+      const [id, key] = pair.includes("=") ? pair.split("=", 2) : pair.split(":", 2);
+      if (!id || !key) continue;
+      projectKeys[id.trim()] = key.trim();
+    }
+  }
+
   return {
-    apiKey: process.env.REVENUECAT_API_KEY,
-    projectId: process.env.REVENUECAT_PROJECT_ID || undefined
+    apiKey,
+    projectId,
+    projectIds: projectIds.length ? projectIds : undefined,
+    projectKeys: Object.keys(projectKeys).length ? projectKeys : undefined
   };
 }
 

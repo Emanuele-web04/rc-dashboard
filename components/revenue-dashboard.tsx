@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ArrowDownRight,
   ArrowUpRight,
+  Pencil,
   Moon,
   RefreshCw,
   Settings as SettingsIcon,
@@ -24,11 +25,8 @@ import {
   type ChartConfig
 } from "@/components/ui/chart";
 import { Switch } from "@/components/ui/switch";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger
-} from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   NET_CALCULATOR_DEFAULTS,
   NetCalculatorSheet,
@@ -72,6 +70,8 @@ type TodayPayload = {
 
 type DashboardResponse = Omit<ReturnType<typeof createDemoDashboard>, "overview"> & {
   configured: boolean;
+  projectIds: string[];
+  projects: Array<{ id: string; name: string }>;
   app?: {
     id: string;
     name: string;
@@ -99,6 +99,9 @@ export function RevenueDashboard() {
   // below, then state updates flow back into the URL via replaceState.
   const [rangeKey, setRangeKey] = useState<RangeKey>("28d");
   const [currency, setCurrency] = useState<CurrencyCode>("USD");
+  // `null` means "tutti i progetti" (no filtro lato UI → aggregazione su tutti quelli disponibili).
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[] | null>(null);
+  const [availableProjects, setAvailableProjects] = useState<Array<{ id: string; name: string }>>([]);
   const [cache, setCache] = useState<Record<string, CacheEntry>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -158,6 +161,15 @@ export function RevenueDashboard() {
       }
     }
 
+    const pidsFromUrl = params.get("pids");
+    if (pidsFromUrl) {
+      const parsed = pidsFromUrl
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (parsed.length > 0) setSelectedProjectIds(Array.from(new Set(parsed)));
+    }
+
     // Calculator knobs hydrate from two layers:
     //   1. localStorage (`rc-calc`, JSON-encoded full state) → personal prefs
     //      that survive across visits without polluting the URL.
@@ -202,6 +214,11 @@ export function RevenueDashboard() {
     setOrDelete(url.searchParams, "currency", currency, "USD");
     setOrDelete(url.searchParams, "cut", appleCut ? "1" : "0", "0");
     setOrDelete(url.searchParams, "it", italianTaxes ? "1" : "0", "0");
+    if (selectedProjectIds === null) {
+      url.searchParams.delete("pids");
+    } else {
+      url.searchParams.set("pids", selectedProjectIds.join(","));
+    }
     // Calculator-specific params are only meaningful when the Italian-taxes
     // feature is enabled. Strip them otherwise so the URL stays minimal for
     // OSS users who never touch this feature, and to avoid leaking stale
@@ -225,7 +242,7 @@ export function RevenueDashboard() {
       url.searchParams.delete("inpsf");
     }
     window.history.replaceState(null, "", url.toString());
-  }, [rangeKey, currency, appleCut, italianTaxes, calcState, hydratedFromUrl]);
+  }, [rangeKey, currency, appleCut, italianTaxes, calcState, hydratedFromUrl, selectedProjectIds]);
 
   function handleAppleCutChange(next: boolean) {
     setAppleCut(next);
@@ -265,7 +282,8 @@ export function RevenueDashboard() {
     }
   }
 
-  const cacheKey = `${rangeKey}:${currency}`;
+  const projectsKey = selectedProjectIds === null ? "ALL" : selectedProjectIds.slice().sort().join(",");
+  const cacheKey = `${rangeKey}:${currency}:${projectsKey}`;
   const cached = cache[cacheKey];
   const rawData = cached?.payload;
   // Single transform point: scale every currency-shaped field by NET_FACTOR
@@ -309,8 +327,9 @@ export function RevenueDashboard() {
 
     (async () => {
       try {
+        const projectsQuery = selectedProjectIds === null ? "" : `&projects=${encodeURIComponent(selectedProjectIds.join(","))}`;
         const response = await fetch(
-          `/api/revenuecat?range=${rangeKey}&currency=${currency}`,
+          `/api/revenuecat?range=${rangeKey}&currency=${currency}${projectsQuery}`,
           { signal: controller.signal, cache: "no-store" }
         );
         const payload = await response.json();
@@ -318,6 +337,11 @@ export function RevenueDashboard() {
           throw new Error(payload.message ?? "Unable to load RevenueCat data.");
         }
         if (cancelled) return;
+
+        if (payload?.projects && Array.isArray(payload.projects)) {
+          setAvailableProjects(payload.projects as Array<{ id: string; name: string }>);
+        }
+
         const next: DashboardResponse = payload.configured
           ? payload
           : { ...createDemoDashboard(getRangeConfig(rangeKey)), app: null, currency };
@@ -371,6 +395,25 @@ export function RevenueDashboard() {
         fetchedAt={data?.fetchedAt}
         projectId={data?.projectId}
         app={data?.app ?? null}
+        availableProjects={availableProjects}
+        onProjectRename={async (projectId, nextName) => {
+          const response = await fetch("/api/project-names", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId, name: nextName })
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload.message ?? "Unable to save project name.");
+          }
+          setAvailableProjects((prev) =>
+            prev.map((project) =>
+              project.id === projectId ? { ...project, name: payload.name ?? nextName } : project
+            )
+          );
+        }}
+        selectedProjectIds={selectedProjectIds}
+        onSelectedProjectIdsChange={setSelectedProjectIds}
       />
 
       {italianTaxes && (
@@ -502,7 +545,11 @@ function TopBar({
   configured,
   fetchedAt,
   projectId,
-  app
+  app,
+  availableProjects,
+  onProjectRename,
+  selectedProjectIds,
+  onSelectedProjectIdsChange
 }: {
   rangeKey: RangeKey;
   setRangeKey: (range: RangeKey) => void;
@@ -518,8 +565,25 @@ function TopBar({
   fetchedAt?: string;
   projectId?: string;
   app?: DashboardResponse["app"];
+  availableProjects: Array<{ id: string; name: string }>;
+  onProjectRename: (projectId: string, nextName: string) => Promise<void>;
+  selectedProjectIds: string[] | null;
+  onSelectedProjectIdsChange: (next: string[] | null) => void;
 }) {
-  const appName = app?.name ?? projectId ?? "demo";
+  const effectiveSelectedProjectIds =
+    selectedProjectIds ?? availableProjects.map((p) => p.id);
+  const selectedProjectsMeta =
+    selectedProjectIds === null
+      ? availableProjects
+      : availableProjects.filter((p) => selectedProjectIds.includes(p.id));
+  const appName =
+    app?.name ??
+    (selectedProjectsMeta.length === 1
+      ? selectedProjectsMeta[0].name
+      : selectedProjectsMeta.length
+        ? `${selectedProjectsMeta.length} projects`
+        : projectId) ??
+    "demo";
 
   return (
     <header className="topbar">
@@ -537,6 +601,13 @@ function TopBar({
         {italianTaxes && <NetCalculatorTrigger onClick={onOpenCalculator} />}
 
         <AppleCutToggle checked={appleCut} onCheckedChange={onAppleCutChange} />
+
+        <ProjectsSelector
+          availableProjects={availableProjects}
+          onProjectRename={onProjectRename}
+          selectedProjectIds={selectedProjectIds}
+          onSelectedProjectIdsChange={onSelectedProjectIdsChange}
+        />
 
         <div className="tabs currency-tabs" role="tablist" aria-label="Display currency">
           {(["USD", "EUR"] as CurrencyCode[]).map((option) => (
@@ -588,6 +659,200 @@ function TopBar({
         </div>
       </div>
     </header>
+  );
+}
+
+function ProjectsSelector({
+  availableProjects,
+  onProjectRename,
+  selectedProjectIds,
+  onSelectedProjectIdsChange
+}: {
+  availableProjects: Array<{ id: string; name: string }>;
+  onProjectRename: (projectId: string, nextName: string) => Promise<void>;
+  selectedProjectIds: string[] | null;
+  onSelectedProjectIdsChange: (next: string[] | null) => void;
+}) {
+  const allIds = availableProjects.map((p) => p.id);
+  const initialDraft = selectedProjectIds === null ? new Set(allIds) : new Set(selectedProjectIds);
+  const [draft, setDraft] = useState<Set<string>>(initialDraft);
+  const [open, setOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<{ id: string; currentName: string } | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraft(selectedProjectIds === null ? new Set(allIds) : new Set(selectedProjectIds));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allIds.join(","), selectedProjectIds ? selectedProjectIds.join(",") : "ALL"]);
+
+  const selectedLabel =
+    selectedProjectIds === null ? `All projects (${allIds.length})` : `${selectedProjectIds.length} selected`;
+
+  const selectedNames =
+    selectedProjectIds === null
+      ? `${availableProjects.length} projects`
+      : availableProjects
+          .filter((p) => selectedProjectIds.includes(p.id))
+          .map((p) => p.name)
+          .slice(0, 2)
+          .join(", ");
+
+  return (
+    <>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="topbar-toggle"
+            data-active={selectedProjectIds === null}
+            title="Select which projects to include"
+            aria-label="Select projects"
+          >
+            <span className="topbar-toggle-label">PROJECTS</span>
+            <span className="projects-tab-sub">{selectedProjectIds === null ? selectedLabel : selectedNames}</span>
+          </button>
+        </PopoverTrigger>
+
+        <PopoverContent align="end" sideOffset={6} className="projects-popover">
+          <div className="settings-eyebrow">PROJECTS</div>
+          <div className="settings-section-title" style={{ marginBottom: 10 }}>
+            Select which projects to include in the dashboard
+          </div>
+
+          {availableProjects.length === 0 ? (
+            <p className="empty">Loading projects...</p>
+          ) : (
+            <div className="projects-list" role="list">
+              {availableProjects.map((p) => (
+                <label key={p.id} className="projects-row">
+                  <input
+                    type="checkbox"
+                    checked={draft.has(p.id)}
+                    onChange={(e) => {
+                      const next = new Set(draft);
+                      if (e.target.checked) next.add(p.id);
+                      else next.delete(p.id);
+                      setDraft(next);
+                      const nextSelection =
+                        next.size === 0 || next.size === allIds.length ? null : Array.from(next).sort();
+                      onSelectedProjectIdsChange(nextSelection);
+                    }}
+                  />
+                  <div className="projects-row-text">
+                    <span className="projects-row-name">{p.name}</span>
+                    <span className="projects-row-id">({p.id})</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="projects-edit-btn"
+                    aria-label={`Edit project name for ${p.name}`}
+                    title="Edit project name"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    setOpen(false);
+                      setRenameTarget({ id: p.id, currentName: p.name });
+                      setRenameValue(p.name === "No name" ? "" : p.name);
+                      setRenameError(null);
+                      setRenameOpen(true);
+                    }}
+                  >
+                    <Pencil size={13} strokeWidth={1.9} />
+                  </button>
+                </label>
+              ))}
+            </div>
+          )}
+
+          <div className="projects-actions flex items-center gap-2" style={{ marginTop: 12 }}>
+            <button
+              type="button"
+              className="topbar-toggle"
+              onClick={() => {
+                const next = new Set(allIds);
+                setDraft(next);
+                onSelectedProjectIdsChange(null);
+              }}
+              disabled={allIds.length === 0}
+            >
+              Select all
+            </button>
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      <Dialog
+        open={renameOpen}
+        onOpenChange={(next) => {
+          setRenameOpen(next);
+          if (!next) {
+            setRenameSaving(false);
+            setRenameError(null);
+          }
+        }}
+      >
+        <DialogContent className="projects-rename-dialog">
+          <DialogHeader>
+            <div className="settings-eyebrow">PROJECTS</div>
+            <DialogTitle>Edit project name</DialogTitle>
+            <DialogDescription>
+              This will be saved to <span className="mono">project-names.json</span>.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="projects-rename-body">
+            <label className="projects-rename-label">
+              <span className="projects-rename-label-text">Name</span>
+              <input
+                className="projects-rename-input"
+                value={renameValue}
+                placeholder="Project name"
+                onChange={(e) => setRenameValue(e.target.value)}
+                autoFocus
+              />
+            </label>
+            {renameTarget?.id && <div className="projects-rename-hint">ID: <span className="mono">{renameTarget.id}</span></div>}
+            {renameError && <div className="projects-rename-error">{renameError}</div>}
+          </div>
+
+          <div className="projects-rename-actions">
+            <button
+              type="button"
+              className="topbar-toggle"
+              onClick={() => setRenameOpen(false)}
+              disabled={renameSaving}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="topbar-toggle"
+              data-active="true"
+              disabled={renameSaving || !renameTarget}
+              onClick={async () => {
+                if (!renameTarget) return;
+                const normalized = renameValue.trim() || "No name";
+                try {
+                  setRenameSaving(true);
+                  setRenameError(null);
+                  await onProjectRename(renameTarget.id, normalized);
+                  setRenameOpen(false);
+                } catch (e) {
+                  setRenameError(e instanceof Error ? e.message : "Unable to save.");
+                } finally {
+                  setRenameSaving(false);
+                }
+              }}
+            >
+              {renameSaving ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
