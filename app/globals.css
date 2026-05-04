@@ -17,6 +17,10 @@
   --color-primary-foreground: var(--bg-elev);
   --color-muted: var(--bg-tint);
   --color-muted-foreground: var(--fg-mute);
+  --color-accent: var(--accent-soft);
+  --color-accent-foreground: var(--fg);
+  --color-destructive: var(--neg);
+  --color-destructive-foreground: var(--bg-elev);
   --color-border: var(--line);
   --color-input: var(--line);
   --color-ring: var(--fg);
@@ -908,6 +912,128 @@ p {
   font-family: var(--font-mono);
   font-size: 10.5px;
   letter-spacing: 0.01em;
+}
+
+/* ─── Date range picker ───────────────────────────────────── */
+/* Trigger reuses .topbar-toggle so the calendar icon clusters visually with
+   the segmented range tabs. The label slot mirrors .topbar-toggle-label so
+   text width grows from "Custom" to "Mar 1 – Apr 28" without the topbar
+   layout reflowing into a different rhythm. */
+.date-range-trigger {
+  font-family: var(--font-mono);
+  gap: 6px;
+}
+
+.date-range-trigger svg {
+  color: var(--fg-faint);
+  transition: color 120ms ease;
+}
+
+.date-range-trigger:hover svg,
+.date-range-trigger[data-active="true"] svg {
+  color: var(--accent);
+}
+
+.date-range-trigger[data-active="true"] .topbar-toggle-label {
+  color: var(--fg);
+}
+
+/* Popover surface — same hairline language as .settings-popover. The shadcn
+   Calendar inside brings its own grid + day buttons, so we only style the
+   outer chrome (head, body split, footer) here. */
+.date-range-popover {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 24px -12px color-mix(in srgb, var(--fg) 25%, transparent);
+  color: var(--fg);
+}
+
+.date-range-head {
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px;
+}
+
+.date-range-eyebrow {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  margin-bottom: 8px;
+}
+
+/* "From → To" header reads the current draft so the operator can confirm
+   without scanning the grid for a highlighted cell. Empty state shows an
+   em-dash to keep widths stable while picking. */
+.date-range-summary {
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr auto 1fr;
+  padding: 8px 10px;
+}
+
+.date-range-summary-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.date-range-summary-label {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.date-range-summary-value {
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.date-range-summary-cell[data-empty="true"] .date-range-summary-value {
+  color: var(--fg-faint);
+}
+
+.date-range-summary-arrow {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Body splits presets (left) from the Calendar (right). Calendar carries
+   its own padding via shadcn defaults. */
+.date-range-body {
+  display: flex;
+  align-items: stretch;
+}
+
+.date-range-presets {
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 10px;
+  width: 140px;
+}
+
+.date-range-actions {
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 10px 12px;
 }
 
 /* ─── Net calculator (Sheet) ──────────────────────────────── */

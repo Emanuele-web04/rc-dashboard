@@ -62,7 +62,12 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const rangeKey = (url.searchParams.get("range") ?? "28d") as RangeKey;
   const currency = url.searchParams.get("currency") ?? process.env.REVENUECAT_CURRENCY ?? "USD";
-  const range = getRangeConfig(rangeKey);
+  const customFrom = url.searchParams.get("from");
+  const customTo = url.searchParams.get("to");
+  const range =
+    rangeKey === "custom" && isIsoDate(customFrom) && isIsoDate(customTo)
+      ? getRangeConfig(rangeKey, { from: customFrom, to: customTo })
+      : getRangeConfig(rangeKey);
   const config = getRevenueCatConfig();
 
   if (!config.apiKey) {
@@ -193,14 +198,21 @@ async function fetchDashboardPayload(
     range.key === "28d"
       ? revenueCatFetch(`/projects/${projectId}/metrics/overview`, apiKey, { currency })
       : Promise.resolve(null);
-  const [overview, today, ...rawCharts] = await Promise.all([
+  // Cap the chart-endpoint burst. RevenueCat has both a per-minute budget and
+  // a tighter concurrent/per-second ceiling — firing 9+ /charts requests in
+  // one tick (e.g. on a currency switch where nothing is cached) reliably
+  // trips 429s on a subset. A pool of 4 keeps wallclock close to parallel
+  // (~3 waves × ~150ms) while staying under the concurrent ceiling. Today +
+  // overview share the same chart bucket, so they ride in the same pool.
+  const chartFetches = DASHBOARD_CHARTS.map((chart) => () =>
+    revenueCatFetch(`/projects/${projectId}/charts/${chart.name}`, apiKey, query)
+      .then((data) => normalizeChart(chart, data))
+      .catch((error) => normalizeChart(chart, null, error))
+  );
+  const [overview, today, rawCharts] = await Promise.all([
     overviewRequest,
     fetchTodaySeries(projectId, apiKey, currency),
-    ...DASHBOARD_CHARTS.map((chart) =>
-      revenueCatFetch(`/projects/${projectId}/charts/${chart.name}`, apiKey, query)
-        .then((data) => normalizeChart(chart, data))
-        .catch((error) => normalizeChart(chart, null, error))
-    )
+    mapPool(chartFetches, 4)
   ]);
   const charts = addMetricComparisons(rawCharts, range);
 
@@ -452,4 +464,30 @@ function formatDate(date: Date) {
 
 function roundMetric(value: number) {
   return Math.round(value * 100) / 100;
+}
+
+// Strict yyyy-MM-dd guard so the only client-controlled query params that flow
+// into chart fetches and the cache key are well-formed dates. Anything else
+// silently falls back to the preset for `range`.
+function isIsoDate(value: string | null): value is string {
+  if (!value) return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+// N workers race a shared cursor through the task list — preserves input order
+// in the result array, never enqueues more than `limit` in-flight promises.
+async function mapPool<R>(tasks: Array<() => Promise<R>>, limit: number): Promise<R[]> {
+  const results = new Array<R>(tasks.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= tasks.length) return;
+      results[i] = await tasks[i]();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+  return results;
 }

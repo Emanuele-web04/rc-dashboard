@@ -29,6 +29,7 @@ import {
   PopoverContent,
   PopoverTrigger
 } from "@/components/ui/popover";
+import { DateRangePicker, type DateRange } from "@/components/ui/date-range-picker";
 import {
   NET_CALCULATOR_DEFAULTS,
   NetCalculatorSheet,
@@ -36,7 +37,12 @@ import {
   type NetCalculatorState
 } from "@/components/net-calculator-sheet";
 import { createDemoDashboard } from "@/lib/demo-data";
-import { RANGE_OPTIONS, getRangeConfig, type RangeKey } from "@/lib/ranges";
+import {
+  RANGE_OPTIONS,
+  getRangeConfig,
+  isPresetRangeKey,
+  type RangeKey
+} from "@/lib/ranges";
 import type { ExtrasInputs } from "@/lib/tax-calculator";
 import type { DashboardChart, DashboardPoint } from "@/lib/chart-normalizer";
 
@@ -98,6 +104,11 @@ export function RevenueDashboard() {
   // (avoids hydration mismatches). The URL is read in a post-mount effect
   // below, then state updates flow back into the URL via replaceState.
   const [rangeKey, setRangeKey] = useState<RangeKey>("28d");
+  // Custom range stays mounted in state independently of `rangeKey` so we can
+  // remember the operator's last picker selection while they sample preset
+  // tabs. Tapping the picker trigger restores it; tapping a preset tab keeps
+  // it around but inactive.
+  const [customRange, setCustomRange] = useState<DateRange | null>(null);
   const [currency, setCurrency] = useState<CurrencyCode>("USD");
   const [cache, setCache] = useState<Record<string, CacheEntry>>({});
   const [isLoading, setIsLoading] = useState(true);
@@ -126,9 +137,21 @@ export function RevenueDashboard() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
 
+    // Custom range hydrates from `?from=…&to=…` and only "wins" when
+    // `?range=custom` is also set — otherwise we'd auto-promote a stale
+    // pair of dates left in the URL after the operator switched back to
+    // a preset tab in another tab/window.
+    const fromUrl = params.get("from");
+    const toUrl = params.get("to");
+    if (isIsoDateString(fromUrl) && isIsoDateString(toUrl) && fromUrl <= toUrl) {
+      setCustomRange({ from: fromUrl, to: toUrl });
+    }
+
     const rangeFromUrl = params.get("range");
-    if (rangeFromUrl && RANGE_OPTIONS.some((option) => option.key === rangeFromUrl)) {
-      setRangeKey(rangeFromUrl as RangeKey);
+    if (rangeFromUrl === "custom" && isIsoDateString(fromUrl) && isIsoDateString(toUrl)) {
+      setRangeKey("custom");
+    } else if (isPresetRangeKey(rangeFromUrl)) {
+      setRangeKey(rangeFromUrl);
     }
 
     const currencyFromUrl = params.get("currency");
@@ -202,6 +225,16 @@ export function RevenueDashboard() {
     setOrDelete(url.searchParams, "currency", currency, "USD");
     setOrDelete(url.searchParams, "cut", appleCut ? "1" : "0", "0");
     setOrDelete(url.searchParams, "it", italianTaxes ? "1" : "0", "0");
+    // `from`/`to` only ride the URL when the custom range is the *active*
+    // selection. Keeping them strictly tied to `range=custom` avoids a stale
+    // `?from=…` lingering after the operator switches back to a preset tab.
+    if (rangeKey === "custom" && customRange) {
+      url.searchParams.set("from", customRange.from);
+      url.searchParams.set("to", customRange.to);
+    } else {
+      url.searchParams.delete("from");
+      url.searchParams.delete("to");
+    }
     // Calculator-specific params are only meaningful when the Italian-taxes
     // feature is enabled. Strip them otherwise so the URL stays minimal for
     // OSS users who never touch this feature, and to avoid leaking stale
@@ -225,7 +258,7 @@ export function RevenueDashboard() {
       url.searchParams.delete("inpsf");
     }
     window.history.replaceState(null, "", url.toString());
-  }, [rangeKey, currency, appleCut, italianTaxes, calcState, hydratedFromUrl]);
+  }, [rangeKey, currency, appleCut, italianTaxes, calcState, customRange, hydratedFromUrl]);
 
   function handleAppleCutChange(next: boolean) {
     setAppleCut(next);
@@ -265,7 +298,12 @@ export function RevenueDashboard() {
     }
   }
 
-  const cacheKey = `${rangeKey}:${currency}`;
+  // Custom dates are part of the cache key so flipping between two custom
+  // ranges (or back to a preset and forward) keeps each result independently
+  // memoized rather than clobbering the previous one.
+  const customSuffix =
+    rangeKey === "custom" && customRange ? `:${customRange.from}:${customRange.to}` : "";
+  const cacheKey = `${rangeKey}:${currency}${customSuffix}`;
   const cached = cache[cacheKey];
   const rawData = cached?.payload;
   // Single transform point: scale every currency-shaped field by NET_FACTOR
@@ -309,18 +347,24 @@ export function RevenueDashboard() {
 
     (async () => {
       try {
-        const response = await fetch(
-          `/api/revenuecat?range=${rangeKey}&currency=${currency}`,
-          { signal: controller.signal, cache: "no-store" }
-        );
+        const apiQuery = new URLSearchParams({ range: rangeKey, currency });
+        if (rangeKey === "custom" && customRange) {
+          apiQuery.set("from", customRange.from);
+          apiQuery.set("to", customRange.to);
+        }
+        const response = await fetch(`/api/revenuecat?${apiQuery.toString()}`, {
+          signal: controller.signal,
+          cache: "no-store"
+        });
         const payload = await response.json();
         if (!response.ok) {
           throw new Error(payload.message ?? "Unable to load RevenueCat data.");
         }
         if (cancelled) return;
+        const demoRange = getRangeConfig(rangeKey, customRange ?? undefined);
         const next: DashboardResponse = payload.configured
           ? payload
-          : { ...createDemoDashboard(getRangeConfig(rangeKey)), app: null, currency };
+          : { ...createDemoDashboard(demoRange), app: null, currency };
         setCache((prev) => ({ ...prev, [cacheKey]: { payload: next, fetchedAt: Date.now() } }));
       } catch (loadError) {
         if (cancelled || (loadError as Error).name === "AbortError") return;
@@ -328,7 +372,7 @@ export function RevenueDashboard() {
         // Fall back to demo data only if we have nothing else cached for this key.
         if (!stored) {
           const fallback: DashboardResponse = {
-            ...createDemoDashboard(getRangeConfig(rangeKey)),
+            ...createDemoDashboard(getRangeConfig(rangeKey, customRange ?? undefined)),
             app: null,
             currency
           };
@@ -359,6 +403,11 @@ export function RevenueDashboard() {
       <TopBar
         rangeKey={rangeKey}
         setRangeKey={setRangeKey}
+        customRange={customRange}
+        onCustomRangeChange={(next) => {
+          setCustomRange(next);
+          setRangeKey("custom");
+        }}
         currency={currency}
         setCurrency={setCurrency}
         appleCut={appleCut}
@@ -390,7 +439,7 @@ export function RevenueDashboard() {
 
       <div className="content">
         {!data ? (
-          <DashboardSkeleton range={getRangeConfig(rangeKey)} />
+          <DashboardSkeleton range={getRangeConfig(rangeKey, customRange ?? undefined)} />
         ) : (
           <>
             <section className="section" aria-label="Headline metrics">
@@ -491,6 +540,8 @@ export function RevenueDashboard() {
 function TopBar({
   rangeKey,
   setRangeKey,
+  customRange,
+  onCustomRangeChange,
   currency,
   setCurrency,
   appleCut,
@@ -506,6 +557,8 @@ function TopBar({
 }: {
   rangeKey: RangeKey;
   setRangeKey: (range: RangeKey) => void;
+  customRange: DateRange | null;
+  onCustomRangeChange: (range: DateRange) => void;
   currency: CurrencyCode;
   setCurrency: (currency: CurrencyCode) => void;
   appleCut: boolean;
@@ -569,6 +622,12 @@ function TopBar({
             </button>
           ))}
         </div>
+
+        <DateRangePicker
+          value={customRange}
+          onChange={onCustomRangeChange}
+          active={rangeKey === "custom"}
+        />
 
         <ThemeToggle />
         <SettingsMenu
@@ -1521,6 +1580,16 @@ function getLatestScope(chart: DashboardChart) {
   }
 
   return "latest point";
+}
+
+// Strict yyyy-MM-dd guard for URL hydration. Anything that isn't a real
+// calendar date (typo'd `2026-13-40`, empty string, prose) gets rejected so
+// it never flows into the cache key or the API query.
+function isIsoDateString(value: string | null): value is string {
+  if (!value) return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
 // Keeps the URL minimal: only writes a param when its value differs from the
