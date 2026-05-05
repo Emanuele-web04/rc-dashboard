@@ -68,6 +68,8 @@ type RevenueCatOverview = {
 };
 
 type CurrencyCode = "USD" | "EUR";
+const SOURCE_CURRENCY: CurrencyCode = "USD";
+const FALLBACK_USD_TO_EUR_RATE = Number(process.env.NEXT_PUBLIC_USD_TO_EUR_RATE ?? "0.92");
 
 type TodayPayload = {
   yesterdayUtcValue: number | null;
@@ -93,9 +95,8 @@ type DashboardResponse = Omit<ReturnType<typeof createDemoDashboard>, "overview"
 
 // ─── ENTRY POINT ─────────────────────────────────────────────
 
-// Per-(range,currency) client cache. Within TTL we skip the network entirely;
-// outside TTL the next range/currency switch triggers a refetch. A page reload
-// wipes this in-memory state and naturally re-hydrates from the API.
+// Per-range client cache. RevenueCat is queried in USD once; display currency
+// conversion happens locally so toggling EUR cannot spend extra API quota.
 const CLIENT_CACHE_TTL_MS = 60_000;
 type CacheEntry = { payload: DashboardResponse; fetchedAt: number };
 
@@ -114,6 +115,7 @@ export function RevenueDashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [appleCut, setAppleCut] = useState(false);
+  const [usdToEurRate, setUsdToEurRate] = useState(() => getFallbackUsdToEurRate());
   // Locale-specific feature flag. Off by default so the dashboard ships
   // generic for OSS use; users opt in via the Settings popover and the
   // Italian forfettario calculator (button + sheet) becomes visible.
@@ -213,6 +215,29 @@ export function RevenueDashboard() {
     setHydratedFromUrl(true);
   }, []);
 
+  // Keep the EUR toggle fresh without coupling it to RevenueCat's chart quota.
+  // The API route caches provider responses and falls back to the env rate.
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const response = await fetch("/api/fx?base=USD&target=EUR", { cache: "no-store" });
+        const payload = await response.json();
+        const nextRate = Number(payload?.rate);
+        if (!cancelled && response.ok && Number.isFinite(nextRate) && nextRate > 0) {
+          setUsdToEurRate(nextRate);
+        }
+      } catch {
+        /* Keep the configured fallback rate if FX lookup fails. */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // state → URL. Uses history.replaceState (not router.replace / pushState):
   //   - no Next.js navigation → no React re-render cycle
   //   - no new history entry → back button still leaves the dashboard cleanly
@@ -303,19 +328,26 @@ export function RevenueDashboard() {
   // memoized rather than clobbering the previous one.
   const customSuffix =
     rangeKey === "custom" && customRange ? `:${customRange.from}:${customRange.to}` : "";
-  const cacheKey = `${rangeKey}:${currency}${customSuffix}`;
+  const cacheKey = `${rangeKey}${customSuffix}`;
   const cached = cache[cacheKey];
   const rawData = cached?.payload;
+  const displayRawData = useMemo(
+    () => (rawData ? convertDisplayCurrency(rawData, currency, usdToEurRate) : rawData),
+    [rawData, currency, usdToEurRate]
+  );
   // Single transform point: scale every currency-shaped field by NET_FACTOR
   // when the toggle is on. Downstream components stay agnostic to the cut.
-  const data = useMemo(() => (rawData ? applyAppleCut(rawData, appleCut) : rawData), [rawData, appleCut]);
+  const data = useMemo(
+    () => (displayRawData ? applyAppleCut(displayRawData, appleCut) : displayRawData),
+    [displayRawData, appleCut]
+  );
 
-  // Calculator gross input is always derived from rawData (never from `data`)
+  // Calculator gross input is always derived from displayRawData (never from `data`)
   // so the Apple cut toggle in the topbar stays purely a *display* concern —
   // the calculator subtracts its own commission internally based on the
   // chosen tier (sbp/standard) and would otherwise double-count.
-  const calcGross = useMemo(() => extractGrossPeriod(rawData), [rawData]);
-  const calcPeriodDays = useMemo(() => extractPeriodDays(rawData), [rawData]);
+  const calcGross = useMemo(() => extractGrossPeriod(displayRawData), [displayRawData]);
+  const calcPeriodDays = useMemo(() => extractPeriodDays(displayRawData), [displayRawData]);
 
   // Hooks must be unconditional; guard against `data` being undefined during skeleton.
   // Headline strip = first 5 charts (revenue, mrr, arr, actives, churn) + a synthetic
@@ -347,7 +379,7 @@ export function RevenueDashboard() {
 
     (async () => {
       try {
-        const apiQuery = new URLSearchParams({ range: rangeKey, currency });
+        const apiQuery = new URLSearchParams({ range: rangeKey, currency: SOURCE_CURRENCY });
         if (rangeKey === "custom" && customRange) {
           apiQuery.set("from", customRange.from);
           apiQuery.set("to", customRange.to);
@@ -364,7 +396,7 @@ export function RevenueDashboard() {
         const demoRange = getRangeConfig(rangeKey, customRange ?? undefined);
         const next: DashboardResponse = payload.configured
           ? payload
-          : { ...createDemoDashboard(demoRange), app: null, currency };
+          : { ...createDemoDashboard(demoRange), app: null, currency: SOURCE_CURRENCY };
         setCache((prev) => ({ ...prev, [cacheKey]: { payload: next, fetchedAt: Date.now() } }));
       } catch (loadError) {
         if (cancelled || (loadError as Error).name === "AbortError") return;
@@ -374,7 +406,7 @@ export function RevenueDashboard() {
           const fallback: DashboardResponse = {
             ...createDemoDashboard(getRangeConfig(rangeKey, customRange ?? undefined)),
             app: null,
-            currency
+            currency: SOURCE_CURRENCY
           };
           setCache((prev) => ({ ...prev, [cacheKey]: { payload: fallback, fetchedAt: Date.now() } }));
         }
@@ -801,6 +833,21 @@ function AppleCutToggle({
   );
 }
 
+// Converts the USD RevenueCat payload into the selected display currency without
+// touching count/percent metrics. This keeps currency toggles off the API path.
+function convertDisplayCurrency(
+  data: DashboardResponse,
+  currency: CurrencyCode,
+  usdToEurRate: number
+): DashboardResponse {
+  if (currency === SOURCE_CURRENCY) {
+    return data.currency === SOURCE_CURRENCY ? data : { ...data, currency: SOURCE_CURRENCY };
+  }
+
+  const factor = getDisplayCurrencyRate(currency, usdToEurRate);
+  return scaleCurrencyValues(data, factor, currency);
+}
+
 // Returns a new DashboardResponse with every currency-shaped numeric scaled by
 // NET_FACTOR when `enabled` is true. Pure / immutable so memoization stays
 // correct. Counts and percentages are passed through unchanged. Comparison
@@ -808,8 +855,11 @@ function AppleCutToggle({
 // factor, leaving the ratio identical.
 function applyAppleCut(data: DashboardResponse, enabled: boolean): DashboardResponse {
   if (!enabled) return data;
-  const factor = NET_FACTOR;
+  return scaleCurrencyValues(data, NET_FACTOR, data.currency as CurrencyCode);
+}
 
+// Scales only currency-shaped dashboard values and preserves ratio metrics.
+function scaleCurrencyValues(data: DashboardResponse, factor: number, currency: CurrencyCode): DashboardResponse {
   const scale = (n: number | null | undefined) => (n == null ? n ?? null : n * factor);
 
   const charts = data.charts.map((chart) => {
@@ -852,13 +902,28 @@ function applyAppleCut(data: DashboardResponse, enabled: boolean): DashboardResp
           if (!isCurrency) return metric;
           return {
             ...metric,
+            unit: currency,
             value: typeof metric.value === "number" ? metric.value * factor : metric.value
           };
         })
       }
     : data.overview;
 
-  return { ...data, charts, today, overview };
+  return { ...data, currency, charts, today, overview };
+}
+
+function getDisplayCurrencyRate(currency: CurrencyCode, usdToEurRate: number) {
+  if (currency === "EUR") {
+    return Number.isFinite(usdToEurRate) && usdToEurRate > 0 ? usdToEurRate : getFallbackUsdToEurRate();
+  }
+
+  return 1;
+}
+
+function getFallbackUsdToEurRate() {
+  return Number.isFinite(FALLBACK_USD_TO_EUR_RATE) && FALLBACK_USD_TO_EUR_RATE > 0
+    ? FALLBACK_USD_TO_EUR_RATE
+    : 0.92;
 }
 
 // ─── Section primitives ───────────────────────────────────────
@@ -1471,7 +1536,10 @@ function longDate(iso: string) {
 }
 
 function formatOverviewValue(metric: RevenueCatOverviewMetric, currency: string) {
-  if (metric.unit === "$") {
+  const unit = metric.unit ?? "";
+  const isCurrency = /[$€£¥]/.test(unit) || /usd|eur|gbp|jpy/i.test(unit);
+
+  if (isCurrency) {
     return new Intl.NumberFormat("en", {
       style: "currency",
       currency,

@@ -11,7 +11,7 @@ Read-only dashboard with longer date ranges than RevenueCat's default 28-day vie
 - Headline KPIs: Revenue, MRR, ARR, Active subscriptions, **Today** (since local midnight, timezone-aware), Churn
 - Interactive trajectory chart (hover for daily values) plus side mini-charts for every other metric
 - Date ranges: 7d / 28d / 3m / 6m / All-time
-- USD / EUR currency toggle
+- USD / EUR currency toggle (EUR is converted locally from a live ECB-backed FX rate to avoid duplicate RevenueCat chart requests)
 - Apple's 15% cut toggle (display gross or net everywhere a currency value is rendered)
 - Light + dark mode with no flash on first paint
 - All filter state persisted in the URL (shareable links) and in localStorage
@@ -26,11 +26,14 @@ Create `.env.local` from `.env.example`:
 REVENUECAT_API_KEY=your_read_only_secret_key
 REVENUECAT_PROJECT_ID=
 REVENUECAT_CURRENCY=USD
+NEXT_PUBLIC_USD_TO_EUR_RATE=0.92
 ```
 
 Never commit a real RevenueCat secret key. `.env.local` and every `.env.*` file are gitignored; only `.env.example` (with placeholders) is allowed in the repo.
 
 `REVENUECAT_PROJECT_ID` is optional. When empty the app calls `/v2/projects` and uses the first project available to the API key.
+
+The app fetches RevenueCat data in USD once per range, then converts currency-shaped values in the browser so switching EUR does not hit the RevenueCat chart rate limit. `/api/fx` retrieves the USD→EUR rate from Frankfurter's ECB-backed feed and caches it server-side; `NEXT_PUBLIC_USD_TO_EUR_RATE` is only the fallback if that lookup fails.
 
 ## RevenueCat permissions
 
