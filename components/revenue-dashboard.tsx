@@ -69,7 +69,7 @@ type RevenueCatOverview = {
 
 type CurrencyCode = "USD" | "EUR";
 const SOURCE_CURRENCY: CurrencyCode = "USD";
-const FALLBACK_USD_TO_EUR_RATE = Number(process.env.NEXT_PUBLIC_USD_TO_EUR_RATE ?? "0.92");
+const FALLBACK_USD_TO_EUR_RATE = Number(process.env.NEXT_PUBLIC_USD_TO_EUR_RATE ?? "0.862");
 
 type TodayPayload = {
   yesterdayUtcValue: number | null;
@@ -923,7 +923,7 @@ function getDisplayCurrencyRate(currency: CurrencyCode, usdToEurRate: number) {
 function getFallbackUsdToEurRate() {
   return Number.isFinite(FALLBACK_USD_TO_EUR_RATE) && FALLBACK_USD_TO_EUR_RATE > 0
     ? FALLBACK_USD_TO_EUR_RATE
-    : 0.92;
+    : 0.862;
 }
 
 // ─── Section primitives ───────────────────────────────────────

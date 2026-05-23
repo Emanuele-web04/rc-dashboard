@@ -18,7 +18,7 @@ type FxPayload = {
   cached?: boolean;
 };
 
-const DEFAULT_USD_TO_EUR_RATE = Number(process.env.NEXT_PUBLIC_USD_TO_EUR_RATE ?? "0.92");
+const DEFAULT_USD_TO_EUR_RATE = Number(process.env.NEXT_PUBLIC_USD_TO_EUR_RATE ?? "0.862");
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const fxCache = new Map<string, { expiresAt: number; payload: FxPayload }>();
 

@@ -26,7 +26,7 @@ Create `.env.local` from `.env.example`:
 REVENUECAT_API_KEY=your_read_only_secret_key
 REVENUECAT_PROJECT_ID=
 REVENUECAT_CURRENCY=USD
-NEXT_PUBLIC_USD_TO_EUR_RATE=0.92
+NEXT_PUBLIC_USD_TO_EUR_RATE=0.862
 ```
 
 Never commit a real RevenueCat secret key. `.env.local` and every `.env.*` file are gitignored; only `.env.example` (with placeholders) is allowed in the repo.
